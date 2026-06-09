@@ -1,12 +1,14 @@
-import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.routers import produtor
+
 from app.routers import produtor, monitoramento, produtividade_router, ia_router, auditoria_router
 
 app = FastAPI(
     title="Infraestrutura VMG - Agro Brasil + Sustentável",
     description="API de Monitoramento Complementar e Verificação Agrícola",
+    openapi_url="/api/v1/openapi.json",
+    docs_url="/api/v1/docs",
+    redoc_url="/api/v1/redoc",
     version="1.0.0"
 )
 
