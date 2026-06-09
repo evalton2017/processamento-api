@@ -53,7 +53,7 @@ jobs:
             cd ~/develop || mkdir -p ~/develop && cd ~/develop
             cd ~/develop/proc-api
             echo "${{ secrets.ENV_FILE }}" > .env
-            echo "${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}" | docker login -u "${{ secrets.DOCKER_HUB_USERNAME }}" --password-stdin
+            echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_HUB_USERNAME }}" --password-stdin
             docker network inspect traefik-network >/dev/null 2>&1 || docker network create traefik-network
             docker compose -f docker-compose-deploy.yml pull processamento-api
             docker compose -f docker-compose-deploy.yml up -d --remove-orphans
