@@ -34,8 +34,7 @@ jobs:
           context: .
           push: true
           tags: ${{ secrets.DOCKER_HUB_USERNAME }}/processamento-api:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # 1. REMOVIDO O CACHE GHA PARA FORÇAR A INSTALAÇÃO DO ASYNCPG/RASTERIO/GEOALCHEMY
 
   deploy:
     needs: build
@@ -49,12 +48,16 @@ jobs:
           username: ${{ secrets.USERNAME }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: 2214
-          script: |           
+          script: |
             mkdir -p ~/develop/proc-api
             cd ~/develop/proc-api
             echo "${{ secrets.ENV_FILE }}" > .env
             echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_HUB_USERNAME }}" --password-stdin
             cd ~/develop
             docker network inspect traefik-network >/dev/null 2>&1 || docker network create traefik-network
-            docker compose -f docker-compose-deploy.yml pull agroprodes_proc_api
-            docker compose -f docker-compose-deploy.yml up -d --remove-orphans
+            
+            # 2. COMANDO CORRIGIDO: apontando para o serviço correto 'api-python-rest'
+            docker compose -f docker-compose-deploy.yml pull api-python-rest
+            
+            # 3. FORÇA A RECRIAÇÃO DOS CONTÊINERES COM A IMAGEM NOVA
+            docker compose -f docker-compose-deploy.yml up -d --force-recreate --remove-orphans
