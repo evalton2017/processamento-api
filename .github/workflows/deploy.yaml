@@ -56,5 +56,5 @@ jobs:
             echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_HUB_USERNAME }}" --password-stdin
             cd ~/develop
             docker network inspect traefik-network >/dev/null 2>&1 || docker network create traefik-network
-            docker compose -f docker-compose-deploy.yml pull processamento-api
+            docker compose -f docker-compose-deploy.yml pull 
             docker compose -f docker-compose-deploy.yml up -d --remove-orphans
