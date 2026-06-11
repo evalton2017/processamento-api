@@ -13,3 +13,5 @@ class GlebaModel(Base):
     geometria = Column(Geometry(geometry_type='POLYGON', srid=4326), nullable=False) # CRS EPSG:4326
     area_hectares = Column(Numeric(10, 2), nullable=False)
     data_criacao = Column(DateTime, server_default=func.now())
+    data_estimada_plantio = Column(DateTime, nullable=True)
+    cultura_declarada = Column(String(255), nullable=True)

@@ -1,5 +1,6 @@
 from pydantic import BaseModel, Field, ConfigDict
 
+
 class RequisicaoGleba(BaseModel):
     id_produtor: int = Field(..., description="ID identificador único do produtor rural")
 
@@ -19,6 +20,14 @@ class RequisicaoGleba(BaseModel):
         description="Data estimada para o início do plantio no formato YYYY-MM-DD"
     )
 
+    numero_car: str = Field(
+        ...,
+        pattern= "^[A-Z]{2}-\\d{7}-[A-F0-9]{32}$",
+        description = "Formato do Código CAR inválido. Use: UF-IBGE-HASH32"
+    )
+
+
+
     # Configurações para integração com esquemas externos/customizados e Swagger
     model_config = ConfigDict(
         title="Requisição de Gleba Agro",
@@ -28,6 +37,7 @@ class RequisicaoGleba(BaseModel):
             "examples": [
                 {
                     "id_produtor": 42,
+                    "numero_car": "BR-MG-3106200-1234567890ABCDEF12345",
                     "geometria": "POLYGON ((-44.41621163950453 -9.968400492342242, -44.4124856656675 -9.970974219395787, -44.413413947835 -9.978122110772, -44.4160249853 -9.984685866199001, -44.41621163950453 -9.968400492342242))",
                     "cultura_declarada": "Soja",
                     "data_estimada_plantio": "2026-10-15"
@@ -35,3 +45,4 @@ class RequisicaoGleba(BaseModel):
             ]
         }
     )
+

@@ -3,6 +3,9 @@ import os
 import sys
 from pathlib import Path
 
+import pystac_client
+from numpy import resize
+from rasterio.windows import from_bounds
 
 from app.schemas.caderno import RespostaCadernoCampo
 
@@ -45,7 +48,8 @@ from app.database.session import get_db
 from app.schemas.clima import RespostaClimaticaHistorica
 from app.services.clima_service import gerar_historico_climatico_60_meses
 from app.services.produtividade_service import estimar_e_validar_produtividade
-
+from rasterio.warp import transform_bounds
+import cv2
 
 router = APIRouter(prefix="/api/v1/mapa", tags=["Monitoramento MAPA"])
 
@@ -77,23 +81,93 @@ def gerar_geotiff_6_bandas_em_memoria(dados_bandas: dict, lat_centro: float, lon
         'transform': transform
     }
 
-    # ◄ CORREÇÃO CRÍTICA: Utiliza MemoryFile para gerenciar os blocos de bytes com segurança no Rasterio
     with MemoryFile() as memfile:
         with memfile.open(**metadata) as dst:
             for idx, nome_banda in enumerate(ordem_bandas, start=1):
-                matriz_banda = dados_bandas.get(nome_banda, np.random.rand(height, width).astype(np.float32))
+                matriz_banda = dados_bandas.get(nome_banda)
                 dst.write(matriz_banda, idx)
                 dst.update_tags(idx, name=nome_banda.upper())
 
-                # Retorna uma cópia dos bytes gerados estruturados para envio via streaming
         return io.BytesIO(memfile.read())
+
+
+def buscar_bandas_satelite_free(lat: float, lon: float) -> dict:
+    """
+    Recupera pixels reais de 6 bandas do Sentinel-2 via streaming (COG),
+    lendo apenas a janela delimitada pelo bbox sem baixar a imagem inteira.
+    """
+    try:
+        api_url = "https://earth-search.aws.element84.com/v1"
+        catalogo = pystac_client.Client.open(api_url)
+
+        bbox = [lon - 0.005, lat - 0.005, lon + 0.005, lat + 0.005]
+
+        pesquisa = catalogo.search(
+            collections=["sentinel-2-l2a"],
+            bbox=bbox,
+            max_items=3,
+            query={"eo:cloud_cover": {"lt": 10}}
+        )
+
+        itens = list(pesquisa.items())
+        if not itens:
+            raise ValueError("Nenhuma imagem sem nuvens encontrada para esta região.")
+
+        item_recente = itens[0]
+
+        mapeamento_bandas = {
+            'vermelho': 'red',
+            'nir': 'nir',
+            'swir_1': 'swir16',
+            'red_edge_1': 'rededge1',
+            'verde': 'green',
+            'azul': 'blue'
+        }
+
+        dados_finais = {}
+
+        config_streaming = {
+            "GDAL_DISABLE_READDIR_ON_OPEN": "EMPTY_DIR",
+            "CPL_VSIL_CURL_ALLOWED_EXTENSIONS": ".tif",
+            "GDAL_HTTP_MERGE_CONSECUTIVE_RANGES": "YES"
+        }
+
+        with rasterio.Env(**config_streaming):
+            for nome_interno, asset_id in mapeamento_bandas.items():
+                if asset_id not in item_recente.assets:
+                    raise KeyError(f"A banda {asset_id} não está disponível.")
+
+                url_banda = item_recente.assets[asset_id].href
+
+                with rasterio.open(url_banda) as src:
+                    # ◄ CORREÇÃO CRÍTICA: Repjeta o BBOX de EPSG:4326 (graus) para o EPSG nativo da imagem (UTM)
+                    bbox_utm = transform_bounds("EPSG:4326", src.crs, *bbox)
+
+                    # Agora a janela de leitura usará as coordenadas métricas corretas
+                    janela_pixel = from_bounds(*bbox_utm, transform=src.transform)
+                    matriz = src.read(1, window=janela_pixel)
+
+                    # Valida se a leitura falhou ou veio vazia
+                    if matriz.size == 0 or np.isnan(matriz).all():
+                        matriz = np.zeros((100, 100), dtype=np.uint16)
+
+                    if matriz.shape != (100, 100):
+                        matriz = cv2.resize(matriz, (100, 100), interpolation=cv2.INTER_LINEAR)
+
+                    # Remove NaNs isolados e mantém o tipo de dado original UInt16
+                    matriz = np.nan_to_num(matriz, nan=0)
+                    dados_finais[nome_interno] = matriz.astype(np.uint16)
+
+        return dados_finais
+
+    except Exception as e:
+        raise RuntimeError(f"Falha ao obter dados via streaming: {str(e)}")
 
 
 @router.get("/contrato/{id_contrato}/download-geotiff", response_class=StreamingResponse)
 async def download_geotiff_contrato(id_contrato: int, db: AsyncSession = Depends(get_db)):
     """
-    Endpoint destinado ao MAPA para realizar o download individualizado dos metadados
-    em formato GeoTIFF contendo as 6 bandas espectrais e coordenadas da gleba monitorada.
+    Endpoint destinado ao MAPA para realizar o download de dados reais do Sentinel-2 em GeoTIFF.
     """
     try:
         query = text("""
@@ -111,39 +185,19 @@ async def download_geotiff_contrato(id_contrato: int, db: AsyncSession = Depends
             detail=f"Erro de comunicação com o banco de dados geográfico: {str(err_bd)}"
         )
 
-    # 2. SE NÃO ENCONTRAR: Retorna 404 de forma limpa FORA do bloco try genérico de processamento
     if not dados_contrato:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Contrato ou Gleba monitorada de ID {id_contrato} não foi localizada no esquema agroprods."
-        )
-
-    # 2. SE NÃO ENCONTRAR: Retorna 404 de forma limpa FORA do bloco try genérico de processamento
-    if not dados_contrato:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Contrato ou Gleba monitorada de ID {id_contrato} não foi localizada no esquema agroprods."
+            detail=f"Contrato ou Gleba monitorada de ID {id_contrato} não foi localizada."
         )
 
     try:
         lat_centro = float(dados_contrato.lat)
         lon_centro = float(dados_contrato.lon)
 
-        # 2. Simulador de recuperação de matrizes de satélite processadas (Mock das 6 bandas)
-        shape_padrao = (100, 100)
-        dados_bandas_vmg = {
-            'vermelho': np.random.uniform(0, 0.3, shape_padrao).astype(np.float32),
-            'nir': np.random.uniform(0.4, 0.9, shape_padrao).astype(np.float32),
-            'swir_1': np.random.uniform(0.1, 0.4, shape_padrao).astype(np.float32),
-            'red_edge_1': np.random.uniform(0.2, 0.6, shape_padrao).astype(np.float32),
-            'verde': np.random.uniform(0.05, 0.2, shape_padrao).astype(np.float32),
-            'azul': np.random.uniform(0.01, 0.15, shape_padrao).astype(np.float32)
-        }
-
-        # 3. Processamento estável em memória
+        dados_bandas_vmg = buscar_bandas_satelite_free(lat_centro, lon_centro)
         arquivo_geotiff = gerar_geotiff_6_bandas_em_memoria(dados_bandas_vmg, lat_centro, lon_centro)
 
-        # 4. Envio do arquivo via Streaming para o MAPA
         nome_arquivo = f"VMG_METADADOS_CONTRATO_{id_contrato}.tif"
         return StreamingResponse(
             arquivo_geotiff,
