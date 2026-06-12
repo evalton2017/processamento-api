@@ -1,8 +1,7 @@
 import os
-from collections.abc import AsyncGenerator
-from urllib.parse import quote_plus  # Adicione este import
-from sqlalchemy import MetaData
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+from sqlalchemy import create_engine
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
 
 schema_name = 'agroprods'
@@ -34,3 +33,8 @@ async def get_ledger_db():
             yield session
         finally:
             await session.close()
+
+SYNC_DATABASE_URL = DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://")
+
+engine_sync = create_engine(SYNC_DATABASE_URL, pool_size=5, max_overflow=10)
+SessionLocalSync = sessionmaker(autocommit=False, autoflush=False, bind=engine_sync)
