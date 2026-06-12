@@ -4,6 +4,7 @@ import pandas as pd
 from celery import Celery
 
 from app.database.database import SessionLocal, ClassificacaoCultura
+from app.database.session import SessionLocalSync
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://:duke2214@127.0.0.1:6379/0")
 celery_app = Celery("vmg_ia_workers", broker=REDIS_URL, backend=REDIS_URL)
@@ -35,20 +36,26 @@ def executar_classificacao_ia_vmg(id_gleba: int, cultura_declarada: str) -> dict
     is_condizente = bool(cultura_identificada.upper() == cultura_declarada.upper())
     data_base = pd.Timestamp.now() - pd.DateOffset(months=3)
 
-    # SALVANDO NA NOVA ESTRUTURA CORPORATIVA
+    # 5. PERSISTÊNCIA AUTOMÁTICA NO BANCO DE DADOS (CORRIGIDA)
     try:
-        with SessionLocal() as db_session:
+        with SessionLocalSync() as db_session:
             nova_classificacao = ClassificacaoCultura(
-                territorio_id=int(id_gleba), # Mapeado id_gleba para territorio_id
+                territorio_id=int(id_gleba),  # IMPORTANTE: Esse ID precisa existir em agroprods.territorios
                 safra=f"{data_base.year}/{data_base.year + 1}",
                 cultura_predita=cultura_identificada,
                 cultura_real=cultura_declarada,
                 confianca_ia=round(taxa_assertividade, 4)
             )
             db_session.add(nova_classificacao)
+
+            # ADICIONE ESTA LINHA: Garante que os dados saiam da memória do Celery e entrem no Postgres
             db_session.commit()
+            print(f"[CELERY WORKER] Classificação para a gleba {id_gleba} salva com sucesso no banco!")
+
     except Exception as db_error:
-        print(f"Erro ao persistir no schema agroprods: {str(db_error)}")
+        # Se houver erro de Chave Estrangeira (ID inexistente), você verá exatamente aqui no terminal do Celery
+        print(f"[CELERY WORKER] ERRO CRÍTICO ao salvar no banco: {str(db_error)}")
+
 
     return {
         "id_gleba": int(id_gleba),

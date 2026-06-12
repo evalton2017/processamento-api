@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-# 1. Instalar dependências nativas do sistema operacional (C++/Geoespaciais)
+# 1. Instalar dependências nativas e ferramentas de compilação
 RUN apt-get update && apt-get install -y --no-install-recommends \
     binutils \
     libgdal-dev \
@@ -8,22 +8,26 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libexpat1 \
     gcc \
     g++ \
+    pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
-# 2. Configurar variáveis de ambiente cruciais para compilação do GDAL
+# 2. Configurar caminhos do GDAL exigidos pelas bibliotecas Python
 ENV CPLUS_INCLUDE_PATH=/usr/include/gdal
 ENV C_INCLUDE_PATH=/usr/include/gdal
-# Informa ao pip a versão exata do GDAL do sistema para evitar falhas de linkagem
-RUN export GDAL_VERSION=$(gdal-config --version)
 
 WORKDIR /app
 
-# 3. Copiar requirements e garantir ferramentas de build atualizadas
+# 3. Copiar e preparar o ambiente de pacotes do Python
 COPY requirements.txt .
 
-# Atualiza pip, setuptools e wheel antes de instalar as dependências
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
-    pip install --no-cache-dir --force-reinstall -r requirements.txt
+# 4. Atualizar ferramentas de build em uma camada separada
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel
+
+# 5. Instalar o GDAL explicitamente antes do restante dos pacotes
+RUN pip install --no-cache-dir GDAL==$(gdal-config --version)
+
+# 6. Instalar os demais pacotes do projeto
+RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
