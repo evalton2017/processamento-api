@@ -1,22 +1,31 @@
-FROM python:3.11-slim
+FROM python:3.14-slim
 
-# 1. Instalar dependências nativas do sistema operacional (C++/Geospeciais)
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    g++ \
+    make \
     binutils \
-    libgdal-dev \
     gdal-bin \
-    libexpat1 \
+    libgdal-dev \
+    libproj-dev \
+    proj-data \
+    proj-bin \
+    libgeos-dev \
+    libgl1 \
+    libglib2.0-0 \
+    tesseract-ocr \
     && rm -rf /var/lib/apt/lists/*
 
-# 2. Configurar variáveis de ambiente para o GDAL/Rasterio se necessário
 ENV CPLUS_INCLUDE_PATH=/usr/include/gdal
 ENV C_INCLUDE_PATH=/usr/include/gdal
+ENV GDAL_CONFIG=/usr/bin/gdal-config
 
 WORKDIR /app
 
-# 3. Copiar e instalar dependências do Python
 COPY requirements.txt .
-RUN pip install --no-cache-dir --force-reinstall -r requirements.txt
+
+RUN pip install --upgrade pip setuptools wheel
+RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
