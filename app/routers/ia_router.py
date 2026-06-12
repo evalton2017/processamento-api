@@ -10,13 +10,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
 import app.database.schemas as schema
-from app.database.database import ClassificacaoCultura, DocumentoTecnico
+from app.database.gleba_model import ClassificacaoCultura, DocumentoTecnico
 from app.database.session import get_db
 from app.services.ia_pipeline import executar_classificacao_ia_vmg, celery_app
 
 router = APIRouter(prefix="/api/v1/ia", tags=["Módulo de Inteligência Artificial"])
 UPLOAD_DIR = "./armazenamento_documentos"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+class PayloadSalvarIA(BaseModel):
+    gleba_id: int
+    safra: str
+    cultura_predita: str
+    cultura_real: Optional[str]
+    confianca_ia: float
 
 class RequisicaoAnaliseIA(BaseModel):
     id_gleba: int
@@ -171,3 +178,19 @@ async def upload_documento_tecnico(
     await db_session.refresh(novo_doc)
 
     return novo_doc
+
+@router.post("/salvar-resultado-internal", include_in_schema=False)
+async def salvar_resultado_internal(payload: PayloadSalvarIA, db_session: AsyncSession = Depends(get_db)):
+    """Rota interna assíncrona blindada para gravação sem quebra de codec."""
+    from app.database.gleba_model import ClassificacaoCultura
+
+    nova_classificacao = ClassificacaoCultura(
+        gleba_id=payload.gleba_id,
+        safra=payload.safra,
+        cultura_predita=payload.cultura_predita,
+        cultura_real=payload.cultura_real,
+        confianca_ia=payload.confianca_ia
+    )
+    db_session.add(nova_classificacao)
+    await db_session.commit()
+    return {"status": "persistido_com_sucesso"}

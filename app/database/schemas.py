@@ -4,15 +4,15 @@ from typing import Optional, List
 
 class ClassificacaoResponse(BaseModel):
     id: int
-    territorio_id: int
+    gleba_id: int  # <-- CORREÇÃO CRÍTICA: Alterado de territorio_id para gleba_id
     safra: str
     data_classificacao: datetime
     cultura_predita: str
-    cultura_real: Optional[str]
+    cultura_real: Optional[str] = None
     confianca_ia: float
 
     class Config:
-        from_attributes = True
+        from_attributes = True  # Permite mapear direto do SQLAlchemy ORM
 
 class MetricasAssertividadeResponse(BaseModel):
     total_amostras: int

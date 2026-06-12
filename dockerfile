@@ -1,18 +1,20 @@
 FROM python:3.11-slim
 
-# 1. Instalar apenas o essencial do sistema operacional (se necessário para execução)
+# 1. Instalar dependências nativas e o pacote GIT necessário para clonar o SICAR
 RUN apt-get update && apt-get install -y --no-install-recommends \
     binutils \
     libgdal-dev \
     gdal-bin \
+    git \
+    tesseract-ocr \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# 2. Copiar as dependências limpas
+# 2. Copiar as dependências limpas (com a linha do Windows já removida)
 COPY requirements.txt .
 
-# 3. Atualizar ferramentas de build básicas e instalar dependências
+# 3. Atualizar ferramentas e instalar os pacotes
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
     pip install --no-cache-dir -r requirements.txt
 

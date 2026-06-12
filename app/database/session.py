@@ -3,6 +3,7 @@ import os
 from sqlalchemy import create_engine
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
+import urllib.parse
 
 schema_name = 'agroprods'
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://user:pass@localhost:5432/vmg_db")
@@ -34,7 +35,23 @@ async def get_ledger_db():
         finally:
             await session.close()
 
-SYNC_DATABASE_URL = DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://")
 
-engine_sync = create_engine(SYNC_DATABASE_URL, pool_size=5, max_overflow=10)
+
+# 1. Trata a URL síncrona forçando o driver psycopg2 clássico
+SYNC_DATABASE_URL = DATABASE_URL.replace("postgresql+asyncpg://", "postgresql+psycopg2://")
+
+# 2. Correção de segurança para decodificar caracteres especiais como %40 na senha
+if "%" in SYNC_DATABASE_URL:
+    # Desfaz a codificação de URL para que o psycopg2 entenda o '@' ou outros caracteres especiais na senha
+    SYNC_DATABASE_URL = urllib.parse.unquote(SYNC_DATABASE_URL)
+
+# 3. Criação da engine blindada contra erros de codec de texto latim
+engine_sync = create_engine(
+    SYNC_DATABASE_URL,
+    pool_size=5,
+    max_overflow=10,
+    # Esta linha força o Postgres a devolver qualquer erro ou mensagem em UTF-8 puro, eliminando o erro de codec!
+    connect_args={"client_encoding": "utf8"}
+)
+
 SessionLocalSync = sessionmaker(autocommit=False, autoflush=False, bind=engine_sync)

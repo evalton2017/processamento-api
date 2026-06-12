@@ -30,33 +30,4 @@ class Territorio(Base):
 
     classificacoes = relationship("ClassificacaoCultura", back_populates="territorio", cascade="all, delete-orphan")
 
-class ClassificacaoCultura(Base):
-    __tablename__ = "classificacoes_culturas"
-    __table_args__ = {"schema": "agroprods"}
 
-    id = Column(Integer, primary_key=True, index=True)
-    territorio_id = Column(Integer, ForeignKey("agroprods.territorios.id", ondelete="CASCADE"), nullable=False)
-    safra = Column(String(9), nullable=False, index=True)
-    data_classificacao = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
-    cultura_predita = Column(String(50), nullable=False)
-    cultura_real = Column(String(255), nullable=True)
-    confianca_ia = Column(Float, nullable=False)
-
-    territorio = relationship("Territorio", back_populates="classificacoes")
-
-class DocumentoTecnico(Base):
-    __tablename__ = "documentos_tecnicos"
-    __table_args__ = {"schema": "agroprods"}
-
-    id = Column(Integer, primary_key=True, index=True)
-    titulo = Column(String(200), nullable=False)
-    tipo = Column(String(50), nullable=False)
-    caminho_arquivo = Column(String(500), nullable=False)
-    data_upload = Column(DateTime, default=datetime.utcnow, nullable=False)
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
