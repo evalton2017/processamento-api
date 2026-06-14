@@ -1,9 +1,8 @@
 import os
 import shutil
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
-from celery.result import AsyncResult
 from fastapi import APIRouter, status, HTTPException, Depends, UploadFile, File, Form
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,12 +11,18 @@ from sqlalchemy.future import select
 import app.database.schemas as schema
 from app.database.gleba_model import ClassificacaoCultura, DocumentoTecnico
 from app.database.session import get_db
-from app.services.ia_pipeline import executar_classificacao_ia_vmg, celery_app
 
-router = APIRouter(prefix="/api/v1/ia", tags=["Módulo de Inteligência Artificial"])
+# IMPORTAÇÃO DO TASKIQ
+from app.services.celery.celery_task import executar_pipeline, broker
+
+router = APIRouter(prefix="/api/v1/ia", tags=["IA Pipeline"])
+
 UPLOAD_DIR = "./armazenamento_documentos"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
+# ----------------------------
+# MODELS
+# ----------------------------
 class PayloadSalvarIA(BaseModel):
     gleba_id: int
     safra: str
@@ -25,172 +30,219 @@ class PayloadSalvarIA(BaseModel):
     cultura_real: Optional[str]
     confianca_ia: float
 
+
 class RequisicaoAnaliseIA(BaseModel):
     id_gleba: int
+    id_produtor: int
     cultura_declarada: str
 
+
+# ----------------------------
+# 1. DISPARAR PIPELINE (AJUSTADO PARA TASKIQ)
+# ----------------------------
 @router.post("/classificar", status_code=status.HTTP_202_ACCEPTED)
 async def solicitar_classificacao_ia(dados: RequisicaoAnaliseIA):
     try:
-        task = executar_classificacao_ia_vmg.apply_async(
-            args=[dados.id_gleba, dados.cultura_declarada]
+        # No Taskiq, usamos '.kiq()' de forma assíncrona para enviar os parâmetros à fila
+        task = await executar_pipeline.kiq(
+            id_gleba=dados.id_gleba,
+            cultura_declarada=dados.cultura_declarada,
+            id_produtor=dados.id_produtor
         )
+
         return {
-            "mensagem": "Pipeline de classificação de culturas por IA iniciado.",
-            "task_id": task.id,
+            "mensagem": "Pipeline iniciado com sucesso",
+            "task_id": task.task_id, # Atributo correto no Taskiq é task_id
             "status": "PROCESSANDO",
-            "url_checagem_status": f"/api/v1/ia/status/{task.id}"
+            "status_url": f"/api/v1/ia/status/{task.task_id}"
         }
+
     except Exception as e:
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Falha ao enfileirar processo de IA: {str(e)}"
+            status_code=500,
+            detail=f"Erro ao enfileirar task: {str(e)}"
         )
 
+
+# ----------------------------
+# 2. STATUS TASKIQ (AJUSTADO)
+# ----------------------------
 @router.get("/status/{task_id}")
-async def obter_status_pipeline_ia(task_id: str):
-    res = AsyncResult(task_id, app=celery_app)
-    if res.state == 'PENDING':
-        return {"task_id": task_id, "status": "AGUARDANDO_WORKER"}
-    elif res.state == 'SUCCESS':
-        return {"task_id": task_id, "status": "SUCESSO", "resultado": res.result}
-    elif res.state == 'FAILURE':
-        return {"task_id": task_id, "status": "FALHA", "erro": str(res.info)}
-    return {"task_id": task_id, "status": res.state}
+async def obter_status(task_id: str):
+    try:
+        # Buscamos o estado diretamente no backend de resultados do Redis configurado no broker
+        result_backend = broker.result_backend
 
-# --- 1. CROP CLASSIFICATION COMPONENT ---
+        if not result_backend:
+            raise HTTPException(status_code=500, detail="Backend de resultados não configurado.")
+
+        # CORREÇÃO: Altera de .is_ready para .is_result_ready do Taskiq
+        is_ready = await result_backend.is_result_ready(task_id)
+
+        if not is_ready:
+            return {"task_id": task_id, "status": "PROCESSANDO"} # Alterado para 'PROCESSANDO' para fazer mais sentido
+
+        # Coleta o objeto de resultado do Redis
+        task_result = await result_backend.get_result(task_id)
+
+        # Verifica se o código da tarefa disparou alguma exceção interna não tratada
+        if task_result.is_err:
+            return {"task_id": task_id, "status": "FALHA", "erro": str(task_result.error)}
+
+        # Retorna o dicionário de sucesso gerado pelo VMGPipeline.executar()
+        return {
+            "task_id": task_id,
+            "status": "SUCESSO",
+            "resultado": task_result.return_value
+        }
+
+    except Exception as e:
+        return {"task_id": task_id, "status": "FALHA", "erro": str(e)}
+
+# ----------------------------
+# 3. CLASSIFICAÇÕES RECENTES (CORRIGIDO UTC E NAIVE)
+# ----------------------------
 @router.get("/classificacoes/atuais", response_model=List[schema.ClassificacaoResponse])
-async def listar_classificacoes_atuais(db_session: AsyncSession = Depends(get_db)):
-    # Padrão assíncrono: cria o select e executa com await
+async def listar_classificacoes_atuais(db: AsyncSession = Depends(get_db)):
+    # datetime.now(timezone.utc) previne DeprecationWarning, .replace(tzinfo=None) remove o fuso para o Postgres
+    limite = (datetime.now(timezone.utc) - timedelta(days=90)).replace(tzinfo=None)
+
     stmt = select(ClassificacaoCultura).where(
-        ClassificacaoCultura.data_classificacao >= datetime.utcnow() - timedelta(days=90)
+        ClassificacaoCultura.data_classificacao >= limite
     )
-    result = await db_session.execute(stmt)
+
+    result = await db.execute(stmt)
     return result.scalars().all()
 
-# --- 2. TIMELINE SLIDER COMPONENT (60 meses) ---
+
+# ----------------------------
+# 4. HISTÓRICO (CORRIGIDO UTC E NAIVE)
+# ----------------------------
 @router.get("/historico", response_model=List[schema.ClassificacaoResponse])
-async def obtener_historico_timeline(meses_retroceder: int = 60, db_session: AsyncSession = Depends(get_db)):
-    if meses_retroceder > 60:
-        raise HTTPException(status_code=400, detail="O limite máximo permitido é de 60 meses.")
+async def historico(meses: int = 60, db: AsyncSession = Depends(get_db)):
+    if meses > 60:
+        raise HTTPException(400, "Máximo 60 meses")
 
-    data_limite = datetime.utcnow() - timedelta(days=meses_retroceder * 30)
+    # Remove o fuso horário para bater com o tipo TIMESTAMP WITHOUT TIME ZONE
+    limite = (datetime.now(timezone.utc) - timedelta(days=meses * 30)).replace(tzinfo=None)
 
-    # 1. Monta a query expressa em select (padrão v2.0)
-    stmt = select(ClassificacaoCultura).where(
-        ClassificacaoCultura.data_classificacao >= data_limite
-    ).order_by(ClassificacaoCultura.data_classificacao.desc())
+    stmt = (
+        select(ClassificacaoCultura)
+        .where(ClassificacaoCultura.data_classificacao >= limite)
+        .order_by(ClassificacaoCultura.data_classificacao.desc())
+    )
 
-    # 2. OBRIGATÓRIO: Executa com await para evitar o erro MissingGreenlet
-    result = await db_session.execute(stmt)
-
-    # 3. Extrai os resultados escalares de dentro do objeto executado
+    result = await db.execute(stmt)
     return result.scalars().all()
 
 
-# --- 3. ASSERTIVENESS VALIDATION COMPONENT (Anexo VI) ---
+# ----------------------------
+# 5. MÉTRICAS IA
+# ----------------------------
 @router.get("/metricas-assertividade", response_model=schema.MetricasAssertividadeResponse)
-async def calcular_metricas_anexo_vi(safra: Optional[str] = None, db_session: AsyncSession = Depends(get_db)):
-    # 1. Monta a query inicial filtrando registros válidos
-    stmt = select(ClassificacaoCultura).where(ClassificacaoCultura.cultura_real.isnot(None))
+async def metricas(safra: Optional[str] = None, db: AsyncSession = Depends(get_db)):
+    stmt = select(ClassificacaoCultura).where(
+        ClassificacaoCultura.cultura_real.isnot(None)
+    )
+
     if safra:
         stmt = stmt.where(ClassificacaoCultura.safra == safra)
 
-    # 2. OBRIGATÓRIO: Executa de forma assíncrona com await
-    result = await db_session.execute(stmt)
+    result = await db.execute(stmt)
     dados = result.scalars().all()
+
     total = len(dados)
 
     if total == 0:
         return {
-            "total_amostras": 0, "verdadeiros_positivos": 0, "falsos_positivos": 0, "falsos_negativos": 0,
-            "exatidao_global": 0.0, "precisao": 0.0, "revocacao_sensibilidade": 0.0, "f1_score": 0.0
+            "total_amostras": 0,
+            "verdadeiros_positivos": 0,
+            "falsos_positivos": 0,
+            "falsos_negativos": 0,
+            "exatidao_global": 0.0,
+            "precisao": 0.0,
+            "revocacao_sensibilidade": 0.0,
+            "f1_score": 0.0
         }
 
-    vp = fp = fn = 0
-    for item in dados:
-        if item.cultura_predita == item.cultura_real:
-            vp += 1
-        else:
-            fp += 1
-            fn += 1
+    vp = sum(1 for d in dados if d.cultura_predita == d.cultura_real)
+    fp = total - vp
+    fn = total - vp
 
-    exatidao = vp / total
-    precisao = vp / (vp + fp) if (vp + fp) > 0 else 0.0
-    revocacao = vp / (vp + fn) if (vp + fn) > 0 else 0.0
-    f1 = 2 * (precisao * revocacao) / (precisao + revocacao) if (precisao + revocacao) > 0 else 0.0
+    precisao = vp / (vp + fp) if (vp + fp) else 0
+    recall = vp / (vp + fn) if (vp + fn) else 0
+    f1 = (2 * precisao * recall / (precisao + recall)) if (precisao + recall) else 0
 
     return {
         "total_amostras": total,
         "verdadeiros_positivos": vp,
         "falsos_positivos": fp,
         "falsos_negativos": fn,
-        "exatidao_global": round(exatidao, 4),
+        "exatidao_global": round(vp / total, 4),
         "precisao": round(precisao, 4),
-        "revocacao_sensibilidade": round(revocacao, 4),
+        "revocacao_sensibilidade": round(recall, 4),
         "f1_score": round(f1, 4)
     }
 
-# --- 4. TECHNICAL APTITUDE UPLOAD COMPONENT (LISTAGEM CORRIGIDA) ---
+
+# ----------------------------
+# 6. DOCUMENTOS
+# ----------------------------
 @router.get("/documentos", response_model=List[schema.DocumentoResponse])
-async def listar_documentos_tecnicos(db_session: AsyncSession = Depends(get_db)):
-    """
-    Lista todos os documentos técnicos salvos usando o padrão assíncrono correto v2.0.
-    """
-    # 1. Cria a instrução select (Substitui o antigo .query)
+async def listar_docs(db: AsyncSession = Depends(get_db)):
     stmt = select(DocumentoTecnico).order_by(DocumentoTecnico.data_upload.desc())
 
-    # 2. OBRIGATÓRIO: Executa de forma assíncrona com await para evitar o erro MissingGreenlet
-    result = await db_session.execute(stmt)
-
-    # 3. Extrai os escalares da consulta
+    result = await db.execute(stmt)
     return result.scalars().all()
 
 
-# --- 4. TECHNICAL APTITUDE UPLOAD COMPONENT (UPLOAD CORRIGIDO) ---
+# ----------------------------
+# 7. UPLOAD (CORRIGIDO UTC)
+# ----------------------------
 @router.post("/documentos/upload", response_model=schema.DocumentoResponse)
-async def upload_documento_tecnico(
+async def upload(
         titulo: str = Form(...),
-        tipo: str = Form(..., description="'atestado_capacidade' ou 'aprovacao_metodologia'"),
+        tipo: str = Form(...),
         arquivo: UploadFile = File(...),
-        db_session: AsyncSession = Depends(get_db)
+        db: AsyncSession = Depends(get_db)
 ):
-    """
-    Recebe os arquivos binários de relatórios e atestados e persiste no Postgres de forma assíncrona.
-    """
     if tipo not in ["atestado_capacidade", "aprovacao_metodologia"]:
-        raise HTTPException(status_code=400, detail="Tipo de documento inválido.")
+        raise HTTPException(400, "Tipo inválido")
 
-    # Salva o arquivo fisicamente no disco local
-    caminho_final = os.path.join(UPLOAD_DIR, f"{datetime.utcnow().timestamp()}_{arquivo.filename}")
-    with open(caminho_final, "wb") as buffer:
-        shutil.copyfileobj(arquivo.file, buffer)
+    # timestamp com fuso horário limpo
+    timestamp_atual = datetime.now(timezone.utc).timestamp()
+    path = os.path.join(UPLOAD_DIR, f"{timestamp_atual}_{arquivo.filename}")
 
-    novo_doc = DocumentoTecnico(
+    with open(path, "wb") as f:
+        shutil.copyfileobj(arquivo.file, f)
+
+    doc = DocumentoTecnico(
         titulo=titulo,
         tipo=tipo,
-        caminho_arquivo=caminho_final
+        caminho_arquivo=path
     )
 
-    # Operações assíncronas corretas com a sessão do banco de dados
-    db_session.add(novo_doc)
-    await db_session.commit()
-    await db_session.refresh(novo_doc)
+    db.add(doc)
+    await db.commit()
+    await db.refresh(doc)
 
-    return novo_doc
+    return doc
 
+
+# ----------------------------
+# 8. SALVAR RESULTADO (INTERNO)
+# ----------------------------
 @router.post("/salvar-resultado-internal", include_in_schema=False)
-async def salvar_resultado_internal(payload: PayloadSalvarIA, db_session: AsyncSession = Depends(get_db)):
-    """Rota interna assíncrona blindada para gravação sem quebra de codec."""
-    from app.database.gleba_model import ClassificacaoCultura
-
-    nova_classificacao = ClassificacaoCultura(
+async def salvar_internal(payload: PayloadSalvarIA, db: AsyncSession = Depends(get_db)):
+    obj = ClassificacaoCultura(
         gleba_id=payload.gleba_id,
         safra=payload.safra,
         cultura_predita=payload.cultura_predita,
         cultura_real=payload.cultura_real,
         confianca_ia=payload.confianca_ia
     )
-    db_session.add(nova_classificacao)
-    await db_session.commit()
-    return {"status": "persistido_com_sucesso"}
+
+    db.add(obj)
+    await db.commit()
+
+    return {"status": "ok"}
