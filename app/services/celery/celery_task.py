@@ -1,0 +1,53 @@
+import os
+import sys
+import asyncio
+
+# Garante o seletor clássico de sockets do Windows logo na inicialização do módulo
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+from app.services.broker import broker
+from app.database.factory.celery_session import get_session
+from app.services.ia_pipeline import VMGPipeline
+print(f"!!! ARQUIVO REAL DA PIPELINE SENDO USADO: {sys.modules[VMGPipeline.__module__].__file__}", flush=True)
+
+def build_pipeline(session):
+    from app.repository.compliance_repository import ComplianceRepository
+    from app.repository.zarc_repository import ZarcRepository
+    from app.repository.repositories import (
+        SoloRepository, ClimaRepository, BpaRepository, LedgerPersistenceRepository
+    )
+
+    return VMGPipeline(
+        compliance_repo=ComplianceRepository(session),  # Consome Categorias 1, 2, 3, 4 e 6
+        zarc_repo=ZarcRepository(session),              # Consome Categoria 5 (ZARC)
+        solo_repo=SoloRepository(session),              # Grid 3D de solo
+        clima_repo=ClimaRepository(session),
+        bpa_repo=BpaRepository(session),
+        ledger_repo=LedgerPersistenceRepository(session)
+    )
+
+@broker.task(task_name="executar_pipeline")
+async def executar_pipeline(id_gleba: int, cultura_declarada: str, id_produtor: int = None):
+    # Força uma pausa rápida de 10ms para permitir que o loop limpe
+    # buffers de rede pendentes do Windows antes de criar os drivers de I/O
+    await asyncio.sleep(0.01)
+
+    SessionMaker, engine = get_session()
+
+    try:
+        async with SessionMaker() as session:
+            pipeline = build_pipeline(session)
+
+            resultado = await pipeline.executar(
+                id_gleba=id_gleba,
+                cultura_declarada=cultura_declarada,
+                id_produtor=id_produtor
+            )
+
+            await session.commit()
+            return resultado
+
+    finally:
+        # Destrói fisicamente o socket TCP do Postgres evitando sockets zumbis
+        await engine.dispose()
