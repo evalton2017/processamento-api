@@ -1,8 +1,9 @@
 from datetime import datetime
 from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, func, Numeric
 from sqlalchemy.orm import relationship
-from geoalchemy2 import Geometry
+from app.models.classificacao_model import ClassificacoesCulturas
 
+# Mantenha os seus imports de banco originais
 from app.database.database import SessionLocal
 from app.database.session import Base
 
@@ -13,31 +14,35 @@ class GlebaModel(Base):
     id_gleba = Column(Integer, primary_key=True, index=True)
     id_produtor = Column(Integer, nullable=False)
     codigo_car = Column(String(50), nullable=True)
-    geometria = Column(Geometry(geometry_type='POLYGON', srid=4326), nullable=False) # CRS EPSG:4326
+
+    codigo_municipio = Column(Integer, ForeignKey("agroprods.municipio_ibge.codigo_municipio"), nullable=True)
+
+    geometria = Column(String, nullable=False)
     area_hectares = Column(Numeric(10, 2), nullable=False)
     data_criacao = Column(DateTime, server_default=func.now())
     data_estimada_plantio = Column(DateTime, nullable=True)
     cultura_declarada = Column(String(255), nullable=True)
 
-    # Corrigido para apontar estritamente para a classe string 'ClassificacaoCultura'
-    classificacoes = relationship("ClassificacaoCultura", back_populates="gleba", cascade="all, delete-orphan")
+    # Relacionamentos
+    municipio = relationship("MunicipioIbge", back_populates="glebas", lazy="select")
+    classificacoes = relationship("ClassificacoesCulturas", back_populates="gleba", cascade="all, delete-orphan")
+    notificacoes = relationship("NotificacaoUsuarioModel", back_populates="gleba", cascade="all, delete-orphan")
 
 
-class ClassificacaoCultura(Base):
-    __tablename__ = "classificacoes_culturas"
+class MunicipioIbge(Base):
+    __tablename__ = "municipio_ibge"
     __table_args__ = {"schema": "agroprods"}
 
-    id = Column(Integer, primary_key=True, index=True)
-    # Chave estrangeira referenciando estritamente a tabela e coluna físicas do Postgres
-    gleba_id = Column(Integer, ForeignKey("agroprods.glebas.id_gleba", ondelete="CASCADE"), nullable=False)
-    safra = Column(String(9), nullable=False, index=True)
-    data_classificacao = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
-    cultura_predita = Column(String(50), nullable=False)
-    cultura_real = Column(String(255), nullable=True)
-    confianca_ia = Column(Float, nullable=False)
+    codigo_municipio = Column(Integer, primary_key=True, index=True)
+    nome_municipio = Column(String(255), nullable=False)
+    codigo_uf = Column(Integer, nullable=False)
+    sigla_uf = Column(String(2), nullable=False, index=True)
+    estado = Column(String(100), nullable=False)
+    latitude = Column(Float, nullable=False)
+    longitude = Column(Float, nullable=False)
+    ddd = Column(Integer, nullable=True)
 
-    # CORREÇÃO CRÍTICA: Alterado de "Gleba" para "GlebaModel" para espelhar a classe declarada acima
-    gleba = relationship("GlebaModel", back_populates="classificacoes")
+    glebas = relationship("GlebaModel", back_populates="municipio")
 
 
 class DocumentoTecnico(Base):

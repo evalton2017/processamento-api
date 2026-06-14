@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.routers import produtor, monitoramento, produtividade_router, ia_router, auditoria_router
+from app.routers import produtor, monitoramento, produtividade_router, ia_router, auditoria_router, dashboard_router
 
 app = FastAPI(
     title="Infraestrutura VMG - Agro Brasil + Sustentável",
@@ -21,6 +21,7 @@ app.add_middleware(
 )
 
 # Inclusão dos módulos de rotas
+app.include_router(dashboard_router.router)
 app.include_router(produtor.router)
 app.include_router(monitoramento.router)
 app.include_router(produtividade_router.router)

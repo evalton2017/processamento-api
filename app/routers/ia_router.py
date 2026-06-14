@@ -8,8 +8,9 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
-import app.database.schemas as schema
-from app.database.gleba_model import ClassificacaoCultura, DocumentoTecnico
+import app.dto.schemas as schema
+from app.models.gleba_model import  DocumentoTecnico
+from app.models.classificacao_model import ClassificacoesCulturas
 from app.database.session import get_db
 
 # IMPORTAÇÃO DO TASKIQ
@@ -107,8 +108,8 @@ async def listar_classificacoes_atuais(db: AsyncSession = Depends(get_db)):
     # datetime.now(timezone.utc) previne DeprecationWarning, .replace(tzinfo=None) remove o fuso para o Postgres
     limite = (datetime.now(timezone.utc) - timedelta(days=90)).replace(tzinfo=None)
 
-    stmt = select(ClassificacaoCultura).where(
-        ClassificacaoCultura.data_classificacao >= limite
+    stmt = select(ClassificacoesCulturas).where(
+        ClassificacoesCulturas.data_classificacao >= limite
     )
 
     result = await db.execute(stmt)
@@ -127,9 +128,9 @@ async def historico(meses: int = 60, db: AsyncSession = Depends(get_db)):
     limite = (datetime.now(timezone.utc) - timedelta(days=meses * 30)).replace(tzinfo=None)
 
     stmt = (
-        select(ClassificacaoCultura)
-        .where(ClassificacaoCultura.data_classificacao >= limite)
-        .order_by(ClassificacaoCultura.data_classificacao.desc())
+        select(ClassificacoesCulturas)
+        .where(ClassificacoesCulturas.data_classificacao >= limite)
+        .order_by(ClassificacoesCulturas.data_classificacao.desc())
     )
 
     result = await db.execute(stmt)
@@ -141,12 +142,12 @@ async def historico(meses: int = 60, db: AsyncSession = Depends(get_db)):
 # ----------------------------
 @router.get("/metricas-assertividade", response_model=schema.MetricasAssertividadeResponse)
 async def metricas(safra: Optional[str] = None, db: AsyncSession = Depends(get_db)):
-    stmt = select(ClassificacaoCultura).where(
-        ClassificacaoCultura.cultura_real.isnot(None)
+    stmt = select(ClassificacoesCulturas).where(
+        ClassificacoesCulturas.cultura_real.isnot(None)
     )
 
     if safra:
-        stmt = stmt.where(ClassificacaoCultura.safra == safra)
+        stmt = stmt.where(ClassificacoesCulturas.safra == safra)
 
     result = await db.execute(stmt)
     dados = result.scalars().all()
@@ -234,7 +235,7 @@ async def upload(
 # ----------------------------
 @router.post("/salvar-resultado-internal", include_in_schema=False)
 async def salvar_internal(payload: PayloadSalvarIA, db: AsyncSession = Depends(get_db)):
-    obj = ClassificacaoCultura(
+    obj = ClassificacoesCulturas(
         gleba_id=payload.gleba_id,
         safra=payload.safra,
         cultura_predita=payload.cultura_predita,

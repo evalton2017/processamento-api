@@ -3,7 +3,7 @@ from typing import List, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text, select, desc
 
-from app.database.models import ClassificacaoCultura
+from app.models.models import ClassificacaoCultura
 
 
 # =========================================================

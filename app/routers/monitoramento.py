@@ -4,10 +4,9 @@ import sys
 from pathlib import Path
 
 import pystac_client
-from numpy import resize
 from rasterio.windows import from_bounds
 
-from app.schemas.caderno import RespostaCadernoCampo
+from app.dto.caderno import RespostaCadernoCampo
 
 # ==============================================================================
 # LIMPEZA E ISOLAMENTO GEOGRÁFICO DE AMBIENTE (DEVE SER A PRIMEIRA COISA DO ARQUIVO)
@@ -45,7 +44,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 from app.database.session import get_db
-from app.schemas.clima import RespostaClimaticaHistorica
+from app.dto.ClimaResponse import RespostaClimaticaHistorica
 from app.services.clima_service import gerar_historico_climatico_60_meses
 from app.services.produtividade_service import estimar_e_validar_produtividade
 from rasterio.warp import transform_bounds

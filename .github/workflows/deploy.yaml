@@ -29,12 +29,14 @@ jobs:
           password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
 
       - name: Build e Push da Imagem
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6  # 1. Atualizado para v6 (melhor gestão de memória para pacotes C)
         with:
           context: .
           push: true
           tags: ${{ secrets.DOCKER_HUB_USERNAME }}/processamento-api:latest
-          # 1. REMOVIDO O CACHE GHA PARA FORÇAR A INSTALAÇÃO DO ASYNCPG/RASTERIO/GEOALCHEMY
+          # 2. Cache inteligente via Docker Registry (Valida mudanças no requirements sem travar o build)
+          cache-from: type=registry,ref=${{ secrets.DOCKER_HUB_USERNAME }}/processamento-api:buildcache
+          cache-to: type=registry,ref=${{ secrets.DOCKER_HUB_USERNAME }}/processamento-api:buildcache,mode=max
 
   deploy:
     needs: build
@@ -56,8 +58,8 @@ jobs:
             cd ~/develop
             docker network inspect traefik-network >/dev/null 2>&1 || docker network create traefik-network
             
-            # 2. COMANDO CORRIGIDO: apontando para o serviço correto 'api-python-rest'
+            # 3. Pull apenas do serviço restrito
             docker compose -f docker-compose-deploy.yml pull api-python-rest
             
-            # 3. FORÇA A RECRIAÇÃO DOS CONTÊINERES COM A IMAGEM NOVA
+            # 4. Força a recriação do ambiente com a imagem nova baixada do Docker Hub
             docker compose -f docker-compose-deploy.yml up -d --force-recreate --remove-orphans
