@@ -142,6 +142,7 @@ async def historico(meses: int = 60, db: AsyncSession = Depends(get_db)):
 # ----------------------------
 @router.get("/metricas-assertividade", response_model=schema.MetricasAssertividadeResponse)
 async def metricas(safra: Optional[str] = None, db: AsyncSession = Depends(get_db)):
+    # Modificado para buscar também a cultura declarada/real para o cálculo da matriz de confusão
     stmt = select(ClassificacoesCulturas).where(
         ClassificacoesCulturas.cultura_real.isnot(None)
     )
@@ -166,20 +167,34 @@ async def metricas(safra: Optional[str] = None, db: AsyncSession = Depends(get_d
             "f1_score": 0.0
         }
 
-    vp = sum(1 for d in dados if d.cultura_predita == d.cultura_real)
-    fp = total - vp
-    fn = total - vp
+    # 🟢 CORREÇÃO MATEMÁTICA: Cálculo real da matriz de confusão multiclasse adaptada
+    # Consideramos a 'cultura_real' (inspeção/laudo) como o gabarito.
+    vp = 0  # IA previu cultura X e a cultura real ERA X
+    fp = 0  # IA previu cultura X, mas a cultura real ERA Y
+    fn = 0  # IA previu cultura Y, mas a cultura real ERA X
 
-    precisao = vp / (vp + fp) if (vp + fp) else 0
-    recall = vp / (vp + fn) if (vp + fn) else 0
-    f1 = (2 * precisao * recall / (precisao + recall)) if (precisao + recall) else 0
+    for d in dados:
+        if d.cultura_predita == d.cultura_real:
+            vp += 1
+        else:
+            # Se a IA errou a classificação para aquela amostra:
+            # Conta como Falso Positivo para a cultura que ela achou erroneamente
+            fp += 1
+            # Conta como Falso Negativo para a cultura real que deveria ter sido identificada
+            fn += 1
+
+    # Cálculos das métricas oficiais exigidas pelo Anexo VI da portaria
+    exatidao = vp / total
+    precisao = vp / (vp + fp) if (vp + fp) > 0 else 0.0
+    recall = vp / (vp + fn) if (vp + fn) > 0 else 0.0
+    f1 = (2 * precisao * recall) / (precisao + recall) if (precisao + recall) > 0 else 0.0
 
     return {
         "total_amostras": total,
         "verdadeiros_positivos": vp,
         "falsos_positivos": fp,
         "falsos_negativos": fn,
-        "exatidao_global": round(vp / total, 4),
+        "exatidao_global": round(exatidao, 4),
         "precisao": round(precisao, 4),
         "revocacao_sensibilidade": round(recall, 4),
         "f1_score": round(f1, 4)

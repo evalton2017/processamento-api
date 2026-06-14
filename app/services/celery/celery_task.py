@@ -1,4 +1,3 @@
-import os
 import sys
 import asyncio
 
@@ -6,10 +5,9 @@ import asyncio
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-from app.services.broker import broker
+from app.services.celery.broker import broker
 from app.database.factory.celery_session import get_session
 from app.services.ia_pipeline import VMGPipeline
-print(f"!!! ARQUIVO REAL DA PIPELINE SENDO USADO: {sys.modules[VMGPipeline.__module__].__file__}", flush=True)
 
 def build_pipeline(session):
     from app.repository.compliance_repository import ComplianceRepository
