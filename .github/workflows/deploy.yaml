@@ -59,7 +59,7 @@ jobs:
             docker network inspect traefik-network >/dev/null 2>&1 || docker network create traefik-network
             
             # 3. Pull apenas do serviço restrito
-            docker compose -f docker-compose-deploy.yml pull api-python-rest
+             docker compose -f docker-compose-deploy.yml pull api-python-rest taskiq-worker-ia
             
             # 4. Força a recriação do ambiente com a imagem nova baixada do Docker Hub
-            docker compose -f docker-compose-deploy.yml up -d --force-recreate --remove-orphans
+            docker compose -f docker-compose-deploy.yml up -d --force-recreate --remove-orphans api-python-rest taskiq-worker-ia
