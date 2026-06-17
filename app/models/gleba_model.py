@@ -5,6 +5,11 @@ from sqlalchemy.orm import relationship
 
 from app.database.session import Base
 
+from app.models.classificacao_model import ClassificacoesCulturas
+from app.models.notificacao_model import NotificacaoUsuarioModel
+from app.models.models_ledger import AtestadosVmgLedger
+# =============================================================
+
 class GlebaModel(Base):
     __tablename__ = "glebas"
     __table_args__ = {"schema": "agroprods"}
@@ -20,11 +25,10 @@ class GlebaModel(Base):
     cultura_declarada = Column(String(255), nullable=True)
 
     municipio = relationship("MunicipioIbge", back_populates="glebas", lazy="select")
+
+    # Agora o SQLAlchemy encontrará a classe perfeitamente em qualquer thread/processo
     classificacoes = relationship("ClassificacoesCulturas", back_populates="gleba", cascade="all, delete-orphan")
     notificacoes = relationship("NotificacaoUsuarioModel", back_populates="gleba", cascade="all, delete-orphan")
-
-
-    classificacoes = relationship("ClassificacoesCulturas", back_populates="gleba", cascade="all, delete-orphan")
 
     atestados_ledger = relationship(
         "AtestadosVmgLedger",
