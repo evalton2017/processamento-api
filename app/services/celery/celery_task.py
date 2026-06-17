@@ -5,13 +5,9 @@ import asyncio
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-from app.models.classificacao_model import ClassificacoesCulturas, CertificadosBpa
-from app.models.gleba_model import GlebaModel, MunicipioIbge, DocumentoTecnico
-from app.models.models_ledger import AtestadosVmgLedger
-from app.models.notificacao_model import NotificacaoUsuarioModel
 from app.services.celery.broker import broker
 from app.database.factory.celery_session import get_session
-from app.services.ia_pipeline import VMGPipeline
+from app.services.pipelineia.ia_pipeline import VMGPipeline
 
 def build_pipeline(session):
     from app.repository.compliance_repository import ComplianceRepository

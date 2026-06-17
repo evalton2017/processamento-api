@@ -100,7 +100,7 @@ async def cadastrar_gleba_vmg(
 
             # Atualiza o campo cpf_cnpj com o dado vindo da requisição
             # Nota: Certifique-se de que 'cpf' existe no esquema do seu 'RequisicaoGleba'
-            pessoa.cpf_cnpj = dados.cpf
+            pessoa.cpf_cnpj = dados.cpf_cnpj
 
             # =================================================================
             # 2. CONSULTA DOS DADOS DO CAR

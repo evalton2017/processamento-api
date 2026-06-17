@@ -4,7 +4,7 @@ import pandas as pd
 from typing import Dict, Any
 from shapely.wkt import loads
 
-from app.services.vmg_intelligence_service import VMGIntelligenceService
+from app.services.pipelineia.vmg_intelligence_service import VMGIntelligenceService
 from app.models.models_ledger import (
     IaClassificacaoCulturaLedger,
     IaEstimativaProdutividadeLedger,

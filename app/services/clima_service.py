@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
-from app.services.interpolation import selecionar_tres_estacoes_proximas
+from app.services.pipelineia.interpolation import selecionar_tres_estacoes_proximas
 
 async def gerar_historico_climatico_60_meses(
         id_gleba: int,
