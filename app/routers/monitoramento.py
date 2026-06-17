@@ -11,19 +11,14 @@ from app.dto.caderno import RespostaCadernoCampo
 # ==============================================================================
 # LIMPEZA E ISOLAMENTO GEOGRÁFICO DE AMBIENTE (DEVE SER A PRIMEIRA COISA DO ARQUIVO)
 # ==============================================================================
-# Força a deleção de variáveis residuais que o Windows injetou do QGIS/Postgres
 os.environ.pop("PROJ_LIB", None)
 os.environ.pop("PROJ_DATA", None)
 
 if "venv" in sys.executable.lower():
-    # Detecta a pasta raiz da sua Venv dinâmica
     base_venv_path = Path(sys.executable).parent.parent
-
-    # Define o caminho para as duas estruturas possíveis de empacotamento no Windows
     proj_windows_path1 = base_venv_path / "Library" / "share" / "proj"
     proj_windows_path2 = base_venv_path / "Lib" / "site-packages" / "rasterio" / "proj_data"
 
-    # Injeta de forma fixa apenas os caminhos internos e limpos da sua Venv
     if proj_windows_path1.exists():
         os.environ["PROJ_LIB"] = str(proj_windows_path1)
         os.environ["PROJ_DATA"] = str(proj_windows_path1)
@@ -35,7 +30,7 @@ if "venv" in sys.executable.lower():
 # IMPORTS DAS BIBLIOTECAS QUE DEPENDEM DO PROJ CONFIGURADO
 # ==============================================================================
 import numpy as np
-import rasterio  # O rasterio agora lerá as variáveis limpas acima
+import rasterio
 from rasterio.transform import from_origin
 from rasterio.io import MemoryFile
 
@@ -43,7 +38,10 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
-from app.database.session import get_db
+
+# 🟢 CORREÇÃO: Importa a sessão assíncrona robusta que unifica os múltiplos schemas
+from app.database.session import get_async_db
+
 from app.dto.ClimaResponse import RespostaClimaticaHistorica
 from app.services.clima_service import gerar_historico_climatico_60_meses
 from app.services.produtividade_service import estimar_e_validar_produtividade
@@ -139,21 +137,16 @@ def buscar_bandas_satelite_free(lat: float, lon: float) -> dict:
                 url_banda = item_recente.assets[asset_id].href
 
                 with rasterio.open(url_banda) as src:
-                    # ◄ CORREÇÃO CRÍTICA: Repjeta o BBOX de EPSG:4326 (graus) para o EPSG nativo da imagem (UTM)
                     bbox_utm = transform_bounds("EPSG:4326", src.crs, *bbox)
-
-                    # Agora a janela de leitura usará as coordenadas métricas corretas
                     janela_pixel = from_bounds(*bbox_utm, transform=src.transform)
                     matriz = src.read(1, window=janela_pixel)
 
-                    # Valida se a leitura falhou ou veio vazia
                     if matriz.size == 0 or np.isnan(matriz).all():
                         matriz = np.zeros((100, 100), dtype=np.uint16)
 
                     if matriz.shape != (100, 100):
                         matriz = cv2.resize(matriz, (100, 100), interpolation=cv2.INTER_LINEAR)
 
-                    # Remove NaNs isolados e mantém o tipo de dado original UInt16
                     matriz = np.nan_to_num(matriz, nan=0)
                     dados_finais[nome_interno] = matriz.astype(np.uint16)
 
@@ -164,7 +157,10 @@ def buscar_bandas_satelite_free(lat: float, lon: float) -> dict:
 
 
 @router.get("/contrato/{id_contrato}/download-geotiff", response_class=StreamingResponse)
-async def download_geotiff_contrato(id_contrato: int, db: AsyncSession = Depends(get_db)):
+async def download_geotiff_contrato(
+        id_contrato: int,
+        db: AsyncSession = Depends(get_async_db)  # 🟢 CORREÇÃO: Sessão assíncrona unificada
+):
     """
     Endpoint destinado ao MAPA para realizar o download de dados reais do Sentinel-2 em GeoTIFF.
     """
@@ -211,81 +207,119 @@ async def download_geotiff_contrato(id_contrato: int, db: AsyncSession = Depends
         )
 
 
-@router.get(
-    "/contrato/{id_contrato}/analise-clima",
-    response_model=RespostaClimaticaHistorica,
-    status_code=status.HTTP_200_OK
-)
-async def obter_analise_climatica_contrato(id_contrato: int, cultura: str = "SOJA", db: AsyncSession = Depends(get_db)):
-    """
-    Retorna o relatório analítico e interpolado (IDW) de chuva e temperatura
-    dos últimos 60 meses para a área do contrato correspondente.
-    """
-    try:
-        relatorio_final = await gerar_historico_climatico_60_meses(
-            id_gleba=id_contrato,
-            cultura=cultura,
-            db=db
-        )
-        return relatorio_final
+    # =====================================================================
+    # 🟢 CONCLUSÃO: Rota Climatica Historica dos 60 meses da portaria
+    # =====================================================================
+    @router.get(
+        "/contrato/{id_contrato}/analise-clima",
+        response_model=RespostaClimaticaHistorica,
+        status_code=status.HTTP_200_OK
+    )
+    async def consultar_analise_climatica_historica(
+            id_contrato: int,
+            db: AsyncSession = Depends(get_async_db)
+    ):
+        """
+        Retorna o histórico climático interpolado dos últimos 60 meses da gleba
+        para atendimento das regras semestrais de auditoria da portaria.
+        """
+        try:
+            # Recupera as coordenadas centrais da área delimitada
+            query = text("""
+                         SELECT ST_Y(ST_Centroid(geometria)) as lat, ST_X(ST_Centroid(geometria)) as lon
+                         FROM agroprods.glebas
+                         WHERE id_gleba = :id_contrato;
+                         """)
 
-    except ValueError as ve:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(ve))
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Erro interno no processamento do relatório de clima: {str(e)}"
-        )
+            result = await db.execute(query, {"id_contrato": id_contrato})
+            coordenadas = result.fetchone()
 
-@router.get("/contrato/{id_contrato}/caderno-campo", response_model=RespostaCadernoCampo)
-async def obter_caderno_campo_safra(id_contrato: int, db: AsyncSession = Depends(get_db)):
-    """
-    Fornece ao final do monitoramento um caderno de campo individualizado com as informações
-    mais relevantes identificadas durante a safra e sua estimativa de produtividade (Item 3.c.XII).
-    """
-    try:
-        # 1. Recupera as informações básicas do talhão no SGBDOR
-        query = text("SELECT id_gleba, area_hectares FROM agroprods.glebas WHERE id_gleba = :id;")
-        res = await db.execute(query, {"id": id_contrato})
-        gleba = res.fetchone()
+            if not coordenadas:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Gleba de ID {id_contrato} não mapeada no ecossistema."
+                )
 
-        if not gleba:
-            raise HTTPException(status_code=404, detail="Gleba não encontrada.")
+            # Invoca o serviço de inteligência climática passando as coordenadas da gleba
+            historico_clima = await gerar_historico_climatico_60_meses(
+                lat=float(coordenadas.lat),
+                lon=float(coordenadas.lon),
+                db_session=db
+            )
 
-        # 2. Reutiliza o motor de clima de 60 meses desenvolvido
-        clima = await gerar_historico_climatico_60_meses(id_gleba=id_contrato, cultura="SOJA", db=db)
+            return historico_clima
 
-        # 3. Reutiliza o motor de estimativa de produtividade por IA desenvolvido
-        prod = estimar_e_validar_produtividade(
-            area_hectares=float(gleba.area_hectares),
-            sacas_desejadas_comercializar=6200.0, # Exemplo vindo do App do Produtor
-            valores_ndvi_ciclo=[0.2, 0.5, 0.88, 0.4],
-            total_chuva_ciclo_mm=510.0,
-            media_temp_ciclo_c=25.5,
-            cultura="SOJA"
-        )
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Falha ao consolidar histórico climático retroativo de 60 meses: {str(e)}"
+            )
+    @router.get("/contrato/{id_contrato}/caderno-campo", response_model=RespostaCadernoCampo)
+    async def obter_caderno_campo_safra(
+            id_contrato: int,
+            db: AsyncSession = Depends(get_async_db)  # 🟢 CORREÇÃO: Utiliza a sessão assíncrona robusta e unificada
+    ):
+        """
+        Fornece ao final do monitoramento um caderno de campo individualizado com as informações
+        mais relevantes identificadas durante a safra e sua estimativa de produtividade (Item 3.c.XII).
+        """
+        try:
+            # 1. Recupera as informações básicas do talhão no SGBDOR
+            query = text("SELECT id_gleba, area_hectares FROM agroprods.glebas WHERE id_gleba = :id;")
+            res = await db.execute(query, {"id": id_contrato})
+            gleba = res.fetchone()
 
-        # 4. Monta o payload unificado em conformidade estrita com o edital
-        return {
-            "id_gleba": id_contrato,
-            "safra_ano": "2025/2026",
-            "area_hectares": float(gleba.area_hectares),
-            "analise_vegetativa_ia": {
-                "cultura_identificada": "SOJA",
-                "assertividade_score": 0.9450,
-                "data_estimada_plantio": "2025-10-15",
-                "data_estimada_colheita": "2026-02-20"
-            },
-            "diagnostico_climatico": clima["indicadores_acumulados"],
-            "alertas_ambientais_emitidos": clima["alertas_emitidos"],
-            "validacao_comercial": {
-                "produtividade_estimada_sc_ha": prod["analise_produtividade_ia"]["produtividade_estimada_sacas_por_hectare"],
+            if not gleba:
+                raise HTTPException(status_code=404, detail="Gleba não encontrada.")
 
-                # CORREÇÃO AQUI: Remova a palavra "_gleba" para bater com o Schema esperado
-                "volume_total_estimado_sacas": prod["analise_produtividade_ia"]["volume_total_estimado_gleba_sacas"],
+            # 2. Reutiliza o motor de clima de 60 meses desenvolvido passando a lat/lon centrais da gleba se necessário
+            # 🟢 AJUSTE: Parâmetros alinhados com o padrão assíncrono chamado na rota anterior
+            query_coords = text("SELECT ST_Y(ST_Centroid(geometria)) as lat, ST_X(ST_Centroid(geometria)) as lon FROM agroprods.glebas WHERE id_gleba = :id;")
+            res_coords = await db.execute(query_coords, {"id": id_contrato})
+            coordenadas = res_coords.fetchone()
 
-                "volume_declarado_condizente": prod["validacao_vmg"]["volume_condizente_com_capacidade_talhao"]
+            clima = await gerar_historico_climatico_60_meses(
+                lat=float(coordenadas.lat),
+                lon=float(coordenadas.lon),
+                db_session=db
+            )
+
+            # 3. Reutiliza o motor de estimativa de produtividade por IA desenvolvido
+            prod = estimar_e_validar_produtividade(
+                area_hectares=float(gleba.area_hectares),
+                sacas_desejadas_comercializar=6200.0, # Exemplo vindo do App do Produtor
+                valores_ndvi_ciclo=[0.2, 0.5, 0.88, 0.4],
+                total_chuva_ciclo_mm=510.0,
+                media_temp_ciclo_c=25.5,
+                cultura="SOJA"
+            )
+
+            # 4. Monta o payload unificado em conformidade estrita com o edital e com o Schema esperado
+            return {
+                "id_gleba": id_contrato,
+                "safra_ano": "2025/2026",
+                "area_hectares": float(gleba.area_hectares),
+                "analise_vegetativa_ia": {
+                    "cultura_identificada": "SOJA",
+                    "assertividade_score": 0.9450,
+                    "data_estimada_plantio": "2025-10-15",
+                    "data_estimada_colheita": "2026-02-20"
+                },
+                "diagnostico_climatico": clima.get("indicadores_acumulados", {}),
+                "alertas_ambientais_emitidos": clima.get("alertas_emitidos", []),
+                "validacao_comercial": {
+                    "produtividade_estimada_sc_ha": prod["analise_produtividade_ia"]["produtividade_estimada_sacas_por_hectare"],
+
+                    # 🟢 CORREÇÃO: Chave ajustada mapeando para "volume_total_estimado_sacas" sem a palavra "_gleba"
+                    "volume_total_estimado_sacas": prod["analise_produtividade_ia"]["volume_total_estimado_gleba_sacas"],
+
+                    "volume_declarado_condizente": prod["validacao_vmg"]["volume_condizente_com_capacidade_talhao"]
+                }
             }
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erro ao compilar caderno de campo: {str(e)}")
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Erro ao compilar caderno de campo: {str(e)}")

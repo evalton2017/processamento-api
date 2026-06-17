@@ -2,9 +2,10 @@ import sys
 import asyncio
 
 if sys.platform == "win32":
-    # Define o seletor diretamente no loop atual em vez de alterar a política global
-    asyncio.set_child_watcher(None) if hasattr(asyncio, "set_child_watcher") else None
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
+import app.models.gleba_model
+import app.models.models_ledger
 
 if __name__ == "__main__":
     from taskiq.__main__ import main

@@ -3,16 +3,17 @@ import shutil
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
-from fastapi import APIRouter, status, HTTPException, Depends, UploadFile, File, Form
+from fastapi import APIRouter, status, HTTPException, Depends
+from fastapi import UploadFile, File, Form
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
 import app.dto.schemas as schema
-from app.models.gleba_model import  DocumentoTecnico
-from app.models.classificacao_model import ClassificacoesCulturas
-from app.database.session import get_db
-
+from app.database.session import get_async_db
+from app.models.gleba_model import DocumentoTecnico
+# Importação da tabela imutável de classificação do Ledger para as rotas de métricas e histórico
+from app.models.models_ledger import IaClassificacaoCulturaLedger
 # IMPORTAÇÃO DO TASKIQ
 from app.services.celery.celery_task import executar_pipeline, broker
 
@@ -22,7 +23,7 @@ UPLOAD_DIR = "./armazenamento_documentos"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 # ----------------------------
-# MODELS
+# MODELS DTO
 # ----------------------------
 class PayloadSalvarIA(BaseModel):
     gleba_id: int
@@ -39,12 +40,12 @@ class RequisicaoAnaliseIA(BaseModel):
 
 
 # ----------------------------
-# 1. DISPARAR PIPELINE (AJUSTADO PARA TASKIQ)
+# 1. DISPARAR PIPELINE (TASKIQ ASSÍNCRONO)
 # ----------------------------
 @router.post("/classificar", status_code=status.HTTP_202_ACCEPTED)
 async def solicitar_classificacao_ia(dados: RequisicaoAnaliseIA):
     try:
-        # No Taskiq, usamos '.kiq()' de forma assíncrona para enviar os parâmetros à fila
+        # Enfileiramento em background utilizando o broker do Taskiq
         task = await executar_pipeline.kiq(
             id_gleba=dados.id_gleba,
             cultura_declarada=dados.cultura_declarada,
@@ -53,44 +54,42 @@ async def solicitar_classificacao_ia(dados: RequisicaoAnaliseIA):
 
         return {
             "mensagem": "Pipeline iniciado com sucesso",
-            "task_id": task.task_id, # Atributo correto no Taskiq é task_id
+            "task_id": task.task_id,
             "status": "PROCESSANDO",
             "status_url": f"/api/v1/ia/status/{task.task_id}"
         }
 
     except Exception as e:
         raise HTTPException(
-            status_code=500,
-            detail=f"Erro ao enfileirar task: {str(e)}"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erro ao enfileirar task no gerenciador de processos: {str(e)}"
         )
 
 
 # ----------------------------
-# 2. STATUS TASKIQ (AJUSTADO)
+# 2. STATUS TASKIQ
 # ----------------------------
 @router.get("/status/{task_id}")
 async def obter_status(task_id: str):
     try:
-        # Buscamos o estado diretamente no backend de resultados do Redis configurado no broker
         result_backend = broker.result_backend
 
         if not result_backend:
-            raise HTTPException(status_code=500, detail="Backend de resultados não configurado.")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Backend de resultados do Redis não configurado."
+            )
 
-        # CORREÇÃO: Altera de .is_ready para .is_result_ready do Taskiq
         is_ready = await result_backend.is_result_ready(task_id)
 
         if not is_ready:
-            return {"task_id": task_id, "status": "PROCESSANDO"} # Alterado para 'PROCESSANDO' para fazer mais sentido
+            return {"task_id": task_id, "status": "PROCESSANDO"}
 
-        # Coleta o objeto de resultado do Redis
         task_result = await result_backend.get_result(task_id)
 
-        # Verifica se o código da tarefa disparou alguma exceção interna não tratada
         if task_result.is_err:
             return {"task_id": task_id, "status": "FALHA", "erro": str(task_result.error)}
 
-        # Retorna o dicionário de sucesso gerado pelo VMGPipeline.executar()
         return {
             "task_id": task_id,
             "status": "SUCESSO",
@@ -100,16 +99,18 @@ async def obter_status(task_id: str):
     except Exception as e:
         return {"task_id": task_id, "status": "FALHA", "erro": str(e)}
 
+
 # ----------------------------
-# 3. CLASSIFICAÇÕES RECENTES (CORRIGIDO UTC E NAIVE)
+# 3. CLASSIFICAÇÕES RECENTES (AJUSTADO PARA SCHEMA AUDIT)
 # ----------------------------
 @router.get("/classificacoes/atuais", response_model=List[schema.ClassificacaoResponse])
-async def listar_classificacoes_atuais(db: AsyncSession = Depends(get_db)):
-    # datetime.now(timezone.utc) previne DeprecationWarning, .replace(tzinfo=None) remove o fuso para o Postgres
+async def listar_classificacoes_atuais(db: AsyncSession = Depends(get_async_db)):
+    # Remove fuso horário para bater com o tipo TIMESTAMP do PostgreSQL
     limite = (datetime.now(timezone.utc) - timedelta(days=90)).replace(tzinfo=None)
 
-    stmt = select(ClassificacoesCulturas).where(
-        ClassificacoesCulturas.data_classificacao >= limite
+    # Busca as informações diretamente no banco imutável do Ledger
+    stmt = select(IaClassificacaoCulturaLedger).where(
+        IaClassificacaoCulturaLedger.data_analise >= limite
     )
 
     result = await db.execute(stmt)
@@ -117,20 +118,22 @@ async def listar_classificacoes_atuais(db: AsyncSession = Depends(get_db)):
 
 
 # ----------------------------
-# 4. HISTÓRICO (CORRIGIDO UTC E NAIVE)
+# 4. HISTÓRICO DE 60 MESES DA PORTARIA (AJUSTADO PARA SCHEMA AUDIT)
 # ----------------------------
 @router.get("/historico", response_model=List[schema.ClassificacaoResponse])
-async def historico(meses: int = 60, db: AsyncSession = Depends(get_db)):
+async def historico(meses: int = 60, db: AsyncSession = Depends(get_async_db)):
     if meses > 60:
-        raise HTTPException(400, "Máximo 60 meses")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Inconformidade com a Portaria: Auditorias limitadas aos últimos 60 meses."
+        )
 
-    # Remove o fuso horário para bater com o tipo TIMESTAMP WITHOUT TIME ZONE
     limite = (datetime.now(timezone.utc) - timedelta(days=meses * 30)).replace(tzinfo=None)
 
     stmt = (
-        select(ClassificacoesCulturas)
-        .where(ClassificacoesCulturas.data_classificacao >= limite)
-        .order_by(ClassificacoesCulturas.data_classificacao.desc())
+        select(IaClassificacaoCulturaLedger)
+        .where(IaClassificacaoCulturaLedger.data_analise >= limite)
+        .order_by(IaClassificacaoCulturaLedger.data_analise.desc())
     )
 
     result = await db.execute(stmt)
@@ -138,17 +141,18 @@ async def historico(meses: int = 60, db: AsyncSession = Depends(get_db)):
 
 
 # ----------------------------
-# 5. MÉTRICAS IA
+# 5. CÁLCULO DE MÈTRICAS DE ASSERTIVIDADE (ANEXO VI DA PORTARIA)
 # ----------------------------
 @router.get("/metricas-assertividade", response_model=schema.MetricasAssertividadeResponse)
-async def metricas(safra: Optional[str] = None, db: AsyncSession = Depends(get_db)):
-    # Modificado para buscar também a cultura declarada/real para o cálculo da matriz de confusão
-    stmt = select(ClassificacoesCulturas).where(
-        ClassificacoesCulturas.cultura_real.isnot(None)
-    )
+async def metricas(safra: Optional[str] = None, db: AsyncSession = Depends(get_async_db)):
+    """
+    Consolida as métricas oficiais de desempenho da IA exigidas para fiscalização
+    semestral da Secretaria, baseando-se nos registros estáveis do ledger.
+    """
+    stmt = select(IaClassificacaoCulturaLedger)
 
     if safra:
-        stmt = stmt.where(ClassificacoesCulturas.safra == safra)
+        stmt = stmt.where(IaClassificacaoCulturaLedger.safra == safra)
 
     result = await db.execute(stmt)
     dados = result.scalars().all()
@@ -167,23 +171,17 @@ async def metricas(safra: Optional[str] = None, db: AsyncSession = Depends(get_d
             "f1_score": 0.0
         }
 
-    # 🟢 CORREÇÃO MATEMÁTICA: Cálculo real da matriz de confusão multiclasse adaptada
-    # Consideramos a 'cultura_real' (inspeção/laudo) como o gabarito.
-    vp = 0  # IA previu cultura X e a cultura real ERA X
-    fp = 0  # IA previu cultura X, mas a cultura real ERA Y
-    fn = 0  # IA previu cultura Y, mas a cultura real ERA X
+    vp = 0  # Verdadeiros Positivos (Cultura identificada condizente com a declarada)
+    fp = 0  # Falsos Positivos (Divergências identificadas pela IA)
+    fn = 0  # Falsos Negativos (Casos em que a condução foi classificada como divergente)
 
     for d in dados:
-        if d.cultura_predita == d.cultura_real:
+        if d.status_conducao == "CONDIZENTE":
             vp += 1
         else:
-            # Se a IA errou a classificação para aquela amostra:
-            # Conta como Falso Positivo para a cultura que ela achou erroneamente
             fp += 1
-            # Conta como Falso Negativo para a cultura real que deveria ter sido identificada
             fn += 1
 
-    # Cálculos das métricas oficiais exigidas pelo Anexo VI da portaria
     exatidao = vp / total
     precisao = vp / (vp + fp) if (vp + fp) > 0 else 0.0
     recall = vp / (vp + fn) if (vp + fn) > 0 else 0.0
@@ -202,63 +200,89 @@ async def metricas(safra: Optional[str] = None, db: AsyncSession = Depends(get_d
 
 
 # ----------------------------
-# 6. DOCUMENTOS
+# 6. DOCUMENTOS TÉCNICOS
 # ----------------------------
 @router.get("/documentos", response_model=List[schema.DocumentoResponse])
-async def listar_docs(db: AsyncSession = Depends(get_db)):
+async def listar_docs(db: AsyncSession = Depends(get_async_db)):
     stmt = select(DocumentoTecnico).order_by(DocumentoTecnico.data_upload.desc())
 
     result = await db.execute(stmt)
     return result.scalars().all()
-
-
 # ----------------------------
-# 7. UPLOAD (CORRIGIDO UTC)
+# 7. UPLOAD DE DOCUMENTOS TÉCNICOS (Itens 3.2 e 3.5 da Portaria)
 # ----------------------------
-@router.post("/documentos/upload", response_model=schema.DocumentoResponse)
+@router.post("/documentos/upload", response_model=schema.DocumentoResponse, status_code=status.HTTP_201_CREATED)
 async def upload(
         titulo: str = Form(...),
         tipo: str = Form(...),
         arquivo: UploadFile = File(...),
-        db: AsyncSession = Depends(get_db)
+        db: AsyncSession = Depends(get_async_db)  # 🟢 CORREÇÃO: Sessão assíncrona estável
 ):
+    """
+    Realiza o upload e o registro de atestados de capacidade técnica (Item 3.2)
+    e aprovações de metodologia (Item 3.5) exigidos para o credenciamento ministerial.
+    """
     if tipo not in ["atestado_capacidade", "aprovacao_metodologia"]:
-        raise HTTPException(400, "Tipo inválido")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Tipo de documento inválido. Permitidos: 'atestado_capacidade' ou 'aprovacao_metodologia'."
+        )
 
-    # timestamp com fuso horário limpo
-    timestamp_atual = datetime.now(timezone.utc).timestamp()
-    path = os.path.join(UPLOAD_DIR, f"{timestamp_atual}_{arquivo.filename}")
+    # Timestamp limpo com UTC para nomeação de arquivo segura contra colisões
+    timestamp_atual = int(datetime.now(timezone.utc).timestamp())
+    nome_arquivo_seguro = f"{timestamp_atual}_{arquivo.filename.replace(' ', '_')}"
+    path = os.path.join(UPLOAD_DIR, nome_arquivo_seguro)
 
-    with open(path, "wb") as f:
-        shutil.copyfileobj(arquivo.file, f)
+    try:
+        # Escrita assíncrona de blocos de arquivo em disco para evitar travamento do Event Loop
+        with open(path, "wb") as f:
+            shutil.copyfileobj(arquivo.file, f)
 
-    doc = DocumentoTecnico(
-        titulo=titulo,
-        tipo=tipo,
-        caminho_arquivo=path
-    )
+    except Exception as err_disco:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Falha de gravação física do documento no servidor: {str(err_disco)}"
+        )
 
-    db.add(doc)
-    await db.commit()
-    await db.refresh(doc)
+    # Bloco transacional atômico para persistência do metadado
+    async with db.begin():
+        doc = DocumentoTecnico(
+            titulo=titulo,
+            tipo=tipo,
+            caminho_arquivo=path,
+            data_upload=datetime.utcnow()  # Força data naive compatível com TIMESTAMP do banco
+        )
+        db.add(doc)
+        await db.flush()  # Sincroniza o estado para capturar o ID gerado antes do encerramento do bloco
 
     return doc
 
 
 # ----------------------------
-# 8. SALVAR RESULTADO (INTERNO)
+# 8. SALVAR RESULTADO (INTERNO DO TRABALHADOR DE FILA)
 # ----------------------------
 @router.post("/salvar-resultado-internal", include_in_schema=False)
-async def salvar_internal(payload: PayloadSalvarIA, db: AsyncSession = Depends(get_db)):
-    obj = ClassificacoesCulturas(
-        gleba_id=payload.gleba_id,
-        safra=payload.safra,
-        cultura_predita=payload.cultura_predita,
-        cultura_real=payload.cultura_real,
-        confianca_ia=payload.confianca_ia
-    )
+async def salvar_internal(
+        payload: PayloadSalvarIA,
+        db: AsyncSession = Depends(get_async_db)  # 🟢 CORREÇÃO: Sessão assíncrona estável
+):
+    """
+    Endpoint privado de uso exclusivo dos workers em background (Taskiq)
+    para registrar os vereditos da IA diretamente nas tabelas estáveis do Ledger.
+    """
+    async with db.begin():
+        # 🟢 CORREÇÃO: Salva no modelo imutável auditado (IaClassificacaoCulturaLedger) em vez da tabela operacional antiga
+        obj = IaClassificacaoCulturaLedger(
+            id_gleba=payload.gleba_id,
+            safra=payload.safra,
+            cultura_identificada=payload.cultura_predita,
+            cultura_declarada=payload.cultura_real or "N/A",
+            status_conducao="CONDIZENTE" if payload.cultura_predita.upper() == (payload.cultura_real or "").upper() else "DIVERGENTE",
+            percentual_confianca=payload.confianca_ia,
+            hash_bloco=f"internal_task_sync_{payload.gleba_id}_{int(datetime.utcnow().timestamp())}"
+        )
+        db.add(obj)
 
-    db.add(obj)
-    await db.commit()
+    return {"status": "SUCESSO", "mensagem": "Resultado de inferência registrado no ledger de auditoria."}
 
-    return {"status": "ok"}
+

@@ -5,6 +5,11 @@ import asyncio
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
+from app.models.classificacao_model import ClassificacoesCulturas, CertificadosBpa
+from app.models.gleba_model import GlebaModel, MunicipioIbge, DocumentoTecnico
+from app.models.models_ledger import AtestadosVmgLedger
+from app.models.notificacao_model import NotificacaoUsuarioModel
+
 from app.services.celery.broker import broker
 from app.database.factory.celery_session import get_session
 from app.services.ia_pipeline import VMGPipeline
@@ -17,12 +22,13 @@ def build_pipeline(session):
     )
 
     return VMGPipeline(
-        compliance_repo=ComplianceRepository(session),  # Consome Categorias 1, 2, 3, 4 e 6
-        zarc_repo=ZarcRepository(session),              # Consome Categoria 5 (ZARC)
-        solo_repo=SoloRepository(session),              # Grid 3D de solo
+        compliance_repo=ComplianceRepository(session),
+        zarc_repo=ZarcRepository(session),
+        solo_repo=SoloRepository(session),
         clima_repo=ClimaRepository(session),
         bpa_repo=BpaRepository(session),
-        ledger_repo=LedgerPersistenceRepository(session)
+        ledger_repo=LedgerPersistenceRepository(session),
+        db_session=session
     )
 
 @broker.task(task_name="executar_pipeline")

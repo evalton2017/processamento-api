@@ -1,10 +1,8 @@
+# app/models/gleba_model.py
 from datetime import datetime
 from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, func, Numeric
 from sqlalchemy.orm import relationship
-from app.models.classificacao_model import ClassificacoesCulturas
 
-# Mantenha os seus imports de banco originais
-from app.database.database import SessionLocal
 from app.database.session import Base
 
 class GlebaModel(Base):
@@ -14,19 +12,25 @@ class GlebaModel(Base):
     id_gleba = Column(Integer, primary_key=True, index=True)
     id_produtor = Column(Integer, nullable=False)
     codigo_car = Column(String(50), nullable=True)
-
     codigo_municipio = Column(Integer, ForeignKey("agroprods.municipio_ibge.codigo_municipio"), nullable=True)
-
     geometria = Column(String, nullable=False)
     area_hectares = Column(Numeric(10, 2), nullable=False)
     data_criacao = Column(DateTime, server_default=func.now())
     data_estimada_plantio = Column(DateTime, nullable=True)
     cultura_declarada = Column(String(255), nullable=True)
 
-    # Relacionamentos
     municipio = relationship("MunicipioIbge", back_populates="glebas", lazy="select")
     classificacoes = relationship("ClassificacoesCulturas", back_populates="gleba", cascade="all, delete-orphan")
     notificacoes = relationship("NotificacaoUsuarioModel", back_populates="gleba", cascade="all, delete-orphan")
+
+
+    classificacoes = relationship("ClassificacoesCulturas", back_populates="gleba", cascade="all, delete-orphan")
+
+    atestados_ledger = relationship(
+        "AtestadosVmgLedger",
+        primaryjoin="GlebaModel.id_gleba == foreign(AtestadosVmgLedger.id_gleba)",
+        viewonly=True
+    )
 
 
 class MunicipioIbge(Base):
@@ -54,11 +58,3 @@ class DocumentoTecnico(Base):
     tipo = Column(String(50), nullable=False)
     caminho_arquivo = Column(String(500), nullable=False)
     data_upload = Column(DateTime, default=datetime.utcnow, nullable=False)
-
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()

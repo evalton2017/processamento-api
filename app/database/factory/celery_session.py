@@ -2,23 +2,24 @@ import os
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from sqlalchemy.pool import NullPool
 from dotenv import load_dotenv
-
-# Carrega as variáveis do arquivo .env para o sistema
+from sqlalchemy.orm import configure_mappers
 load_dotenv()
 
-DATABASE_URL = os.getenv("DATABASE_URL_CELERY")
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 if not DATABASE_URL or "IP_DA_SUA_VPS" in DATABASE_URL:
     raise ValueError("ERRO: O arquivo .env não foi carregado ou a URL está incorreta!")
 
 def get_session():
-    """Gera sessões assíncronas utilizando o driver psycopg, tolerante a redes remotas."""
+
+    configure_mappers()
+
     engine = create_async_engine(
         DATABASE_URL,
         poolclass=NullPool,
         connect_args={
-            "sslmode": "disable",
-            "connect_timeout": 15
+            "timeout": 15,
+            "ssl": False
         }
     )
 

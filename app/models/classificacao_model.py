@@ -14,6 +14,7 @@ class CertificadosBpa(Base):
     data_emissao = Column(Date, nullable=False)
     data_validade = Column(Date, nullable=False)
 
+
 class ClassificacoesCulturas(Base):
     __tablename__ = "classificacoes_culturas"
     __table_args__ = {"schema": "agroprods"}
