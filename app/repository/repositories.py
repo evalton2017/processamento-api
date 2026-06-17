@@ -1,9 +1,11 @@
 from typing import List, Dict, Any
-
+from datetime import datetime, timedelta, timezone
+from narwhals import Decimal
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text, select, desc
 
 from app.models.models import ClassificacaoCultura
+from app.models.models_ledger import AtestadosVmgLedger
 
 
 # =========================================================
@@ -144,34 +146,69 @@ class LedgerPersistenceRepository:
 
         return hash_encontrado or "0" * 64
 
+    async def obter_ultimo_hash_gleba(self, id_gleba: int) -> str:
+        """
+        Busca o hash mais recente gerado para uma determinada gleba na tabela mestre do ledger.
+        Retorna uma string de 64 zeros caso seja a primeira validação da gleba (Gênese).
+        """
+        query = (
+            select(AtestadosVmgLedger.hash_relatorio)
+            .where(AtestadosVmgLedger.id_gleba == id_gleba)
+            .order_by(
+                desc(AtestadosVmgLedger.data_emissao),
+                desc(AtestadosVmgLedger.id_atestado)  # PK corrigida aqui
+            )
+            .limit(1)
+        )
+
+        result = await self.session.execute(query)
+        hash_encontrado = result.scalar_one_or_none()
+
+        return hash_encontrado or "0" * 64
+
     async def salvar_bloco_ledger(
             self,
-            dados_ia: dict,
-            hash_atual: str,
-            hash_anterior: str
-    ):
-        try:
-            registro = ClassificacaoCultura(
-                gleba_id=int(dados_ia["gleba_id"]),
-                safra=dados_ia["safra"],
-                cultura_predita=dados_ia.get("cultura"),
-                cultura_real=dados_ia.get("cultura_real"),
-                confianca_ia=float(dados_ia.get("confianca", 0.0)),
-                produtividade_sacas_ha=float(dados_ia.get("produtividade", 0.0)),
-                nitrogenio_grid=float(dados_ia.get("nitrogenio", 0.0)),
-                prodes_conflito=bool(dados_ia.get("prodes", False)),
-                bpa_status=bool(dados_ia.get("bpa", False)),
-                srid_validado=4326,
-                blockchain_hash=hash_atual,
-                blockchain_anterior=hash_anterior
-            )
+            dados_ia: Dict[str, Any],
+            hash_atual: str
+    ) -> AtestadosVmgLedger:
+        """
+        Instancia e adiciona o registro mestre de auditoria na sessão.
+        Nota: O commit NÃO é realizado aqui dentro para garantir a atomicidade
+        do pipeline (padrão Unit of Work).
+        """
+        # 1. Mapeamento estrito do status baseado na regra do banco (CHECK CONSTRAINT)
+        # O banco exige: 'APROVADO', 'REPROVADO' ou 'PENDENTE'
+        bloqueado = bool(dados_ia.get("bloqueio_socioambiental", False))
+        status_validacao = "REPROVADO" if bloqueado else "APROVADO"
 
-            self.session.add(registro)
-            await self.session.commit()
-            await self.session.refresh(registro)
+        # 2. Resolução do tipo de contrato conforme regras do banco (CHECK CONSTRAINT)
+        # O banco exige: 'Plano Safra', 'PSR' ou 'Proagro'
+        # Buscamos do payload ou aplicamos um padrão válido exigido pela portaria
+        tipo_contrato = dados_ia.get("tipo_contrato", "Plano Safra")
+        if tipo_contrato not in ["Plano Safra", "PSR", "Proagro"]:
+            tipo_contrato = "Plano Safra"
 
-            return registro
+        import builtins
+        # 1. Força a importação do pacote numérico nativo do Python localmente
+        from decimal import Decimal as PythonDecimal
 
-        except Exception:
-            await self.session.rollback()
-            raise
+        produtividade_float = dados_ia.get("produtividade", 0.0)
+        produtividade_arredondada = builtins.round(produtividade_float, 2)
+
+        # 2. Utiliza o alias seguro para converter para o Decimal correto do banco de dados
+        produtividade_decimal = PythonDecimal(str(produtividade_arredondada))
+
+        # 4. Instanciação alinhada com as colunas reais do banco físico
+        registro_ledger = AtestadosVmgLedger(
+            id_gleba=int(dados_ia["gleba_id"]),
+            tipo_contrato=tipo_contrato,
+            status_validacao=status_validacao,
+            estimativa_produtividade_sacas=produtividade_decimal,
+            data_emissao=datetime.utcnow(),
+            hash_relatorio=str(hash_atual)
+        )
+
+        # Adiciona à sessão unitária do pipeline principal
+        self.session.add(registro_ledger)
+
+        return registro_ledger

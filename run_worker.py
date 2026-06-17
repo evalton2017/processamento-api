@@ -9,13 +9,11 @@ import app.models.models_ledger
 
 if __name__ == "__main__":
     from taskiq.__main__ import main
-
     sys.argv = [
         "taskiq",
         "worker",
         "app.services.celery.celery_task:broker",
         "--workers", "1",
-        "--log-level", "INFO"  # Ajustado de --loglevel para --log-level
+        "--log-level", "INFO"
     ]
-
     sys.exit(main())

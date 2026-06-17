@@ -9,7 +9,6 @@ from app.models.classificacao_model import ClassificacoesCulturas, CertificadosB
 from app.models.gleba_model import GlebaModel, MunicipioIbge, DocumentoTecnico
 from app.models.models_ledger import AtestadosVmgLedger
 from app.models.notificacao_model import NotificacaoUsuarioModel
-
 from app.services.celery.broker import broker
 from app.database.factory.celery_session import get_session
 from app.services.ia_pipeline import VMGPipeline
@@ -20,6 +19,7 @@ def build_pipeline(session):
     from app.repository.repositories import (
         SoloRepository, ClimaRepository, BpaRepository, LedgerPersistenceRepository
     )
+
 
     return VMGPipeline(
         compliance_repo=ComplianceRepository(session),

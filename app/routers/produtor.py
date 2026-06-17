@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy import text, select, func
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import List
+from typing import List, Optional
 
 # Importação da sessão unificada criada no passo anterior
 from app.database.session import get_async_db
@@ -11,10 +11,13 @@ from app.dto.municipio_response import MunicipioResponse
 
 # Importação dos modelos estruturados por schema
 from app.models.gleba_model import GlebaModel, MunicipioIbge
+from app.models.models import Pessoa
 from app.models.models_ledger import ConsentimentoLgpdLedger
 
 from app.dto.RequisicaoGleba import RequisicaoGleba
 from app.dto.response.gleba_response import RespostaGlebas
+
+from app.services.celery.celery_task import executar_pipeline, broker
 
 router = APIRouter(prefix="/api/v1/produtor", tags=["Produtor Rural"])
 
@@ -77,20 +80,42 @@ async def cadastrar_gleba_vmg(
         db_principal: AsyncSession = Depends(get_async_db)
 ):
     try:
-        # 🟢 ALTERAÇÃO CRÍTICA: Bloco transacional único controlando múltiplos schemas
         async with db_principal.begin():
-            # 1. Consulta dos dados do CAR
-            query = text("SELECT des_condic FROM agroprods.car_feicoes_ambientais WHERE cod_imovel = :numero_car;")
+            # =================================================================
+            # 1. ATUALIZAÇÃO DA PESSOA (PRODUTOR) VIA CPF
+            # =================================================================
+            # Realiza a busca da pessoa associada ao id_produtor recebido nos dados
+            stmt_pessoa = (
+                select(Pessoa)
+                .where(Pessoa.id == dados.id_produtor)
+            )
+            result_pessoa = await db_principal.execute(stmt_pessoa)
+            pessoa = result_pessoa.scalar_one_or_none()
+
+            if not pessoa:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Produtor (Pessoa) não encontrado no sistema."
+                )
+
+            # Atualiza o campo cpf_cnpj com o dado vindo da requisição
+            # Nota: Certifique-se de que 'cpf' existe no esquema do seu 'RequisicaoGleba'
+            pessoa.cpf_cnpj = dados.cpf
+
+            # =================================================================
+            # 2. CONSULTA DOS DADOS DO CAR
+            # =================================================================
+            query = text("SELECT id FROM agroprods.car_feicoes_ambientais WHERE cod_imovel = :numero_car;")
             res = await db_principal.execute(query, {"numero_car": dados.numero_car})
             propriedade = res.fetchone()
 
             if not propriedade:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Propriedade não encontrada.")
 
-            # 2. Conversão da data
+            # 3. Conversão da data
             data_criacao_convertida = datetime.strptime(dados.data_estimada_plantio, "%Y-%m-%d")
 
-            # 3. Persistência no banco principal (schema: agroprods)
+            # 4. Persistência no banco principal (schema: agroprods)
             nova_gleba = GlebaModel(
                 id_produtor=dados.id_produtor,
                 codigo_car=dados.numero_car,
@@ -105,7 +130,7 @@ async def cadastrar_gleba_vmg(
             # O flush sincroniza os estados e gera o id_gleba de forma segura antes do commit
             await db_principal.flush()
 
-            # Persistência no schema audit usando a mesma sessão do db_principal
+            # 5. Persistência no schema audit usando a mesma sessão do db_principal
             novo_consentimento = ConsentimentoLgpdLedger(
                 id_produtor=dados.id_produtor,
                 autorizado_cruzamento_car=True,
@@ -116,12 +141,28 @@ async def cadastrar_gleba_vmg(
             db_principal.add(novo_consentimento)
             await db_principal.flush()
 
+            # 6. Disparo do pipeline assíncrono via Taskiq (kiq)
+            await executar_pipeline.kiq(
+                id_gleba=nova_gleba.id_gleba,
+                cultura_declarada=dados.cultura_declarada,
+                id_produtor=dados.id_produtor
+            )
+
         return {
             "status": "SUCESSO",
-            "mensagem": "Dados persistidos com sucesso nos esquemas correspondentes de forma atômica.",
+            "mensagem": "Dados persistidos e cadastro do produtor atualizado com sucesso de forma atômica.",
             "id_gleba_gerado": nova_gleba.id_gleba,
             "area_validada_hectares": float(nova_gleba.area_hectares),
+            "produtor_atualizado": pessoa.nome
         }
+
+    except HTTPException as http_err:
+        raise http_err
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erro interno ao processar a operação atômica: {str(e)}"
+        )
 
     except HTTPException:
         raise
@@ -272,13 +313,13 @@ async def identificar_municipio_por_coordenadas(
         db_principal: AsyncSession = Depends(get_async_db)
 ):
     """
-    Identifica dinamicamente o município do IBGE correspondente cruzando o ponto
-    do centróide através da relação de contenção espacial contida na malha geográfica.
+    Identifica dinamicamente o município do IBGE correspondente calculando a menor
+    distância entre o ponto fornecido e as coordenadas numéricas (lat/lon) armazenadas.
     """
     try:
         async with db_principal.begin():
-            # 🟢 CORREÇÃO CRÍTICA: Usa ST_Contains sobre a coluna geométrica real do município (geom).
-            # A busca matemática euclidiana falha severamente perto de divisas políticas territoriais.
+            # Como a tabela armazena latitude e longitude como colunas numéricas,
+            # montamos os pontos espaciais em tempo de execução para calcular a distância física real.
             query = text("""
                          SELECT
                              codigo_municipio,
@@ -286,28 +327,18 @@ async def identificar_municipio_por_coordenadas(
                              sigla_uf,
                              estado
                          FROM agroprods.municipio_ibge
-                         WHERE ST_Contains(geom, ST_SetSRID(ST_MakePoint(:lon, :lat), 4326))
-                             LIMIT 1;
+                         ORDER BY
+                             ST_MakePoint(longitude, latitude)::geography <-> ST_SetSRID(ST_MakePoint(:lon, :lat), 4326)::geography ASC
+                         LIMIT 1;
                          """)
 
             res = await db_principal.execute(query, {"lat": lat, "lon": lon})
             municipio = res.fetchone()
 
-            # Fallback caso a tabela de municípios do cliente utilize busca por proximidade indexada por coordenadas
-            if not municipio:
-                query_fallback = text("""
-                                      SELECT codigo_municipio, nome_municipio, sigla_uf, estado
-                                      FROM agroprods.municipio_ibge
-                                      ORDER BY geom <-> ST_SetSRID(ST_MakePoint(:lon, :lat), 4326) ASC
-                                          LIMIT 1;
-                                      """)
-                res_fallback = await db_principal.execute(query_fallback, {"lat": lat, "lon": lon})
-                municipio = res_fallback.fetchone()
-
             if not municipio:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Nenhum município localizado para o ponto geográfico fornecido."
+                    detail="Nenhum município localizado no banco de dados."
                 )
 
             return {
@@ -317,10 +348,12 @@ async def identificar_municipio_por_coordenadas(
                 "estado": municipio.estado
             }
 
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Erro ao geocodificar centróide via PostGIS: {str(e)}"
+            detail=f"Erro ao geocodificar centróide via coordenadas numéricas: {str(e)}"
         )
 
 class RequisicaoCalcularArea(BaseModel):
@@ -362,4 +395,74 @@ async def calcular_area_geometria_postgis(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Erro interno no PostGIS ao calcular métricas espaciais: {str(e)}"
+        )
+
+@router.get("/culturas", status_code=status.HTTP_200_OK)
+async def listar_dominio_culturas(
+        grupo: Optional[str] = None,
+        ativo: Optional[bool] = True,
+        db_principal: AsyncSession = Depends(get_async_db)
+):
+    """
+    Retorna a listagem do domínio de culturas cadastradas no sistema,
+    permitindo filtros opcionais por grupo e status de ativação.
+    """
+    try:
+        async with db_principal.begin():
+            # Construção dinâmica da cláusula WHERE para filtros opcionais
+            condicoes = []
+            parametros = {}
+
+            if ativo is not None:
+                condicoes.append("ativo = :ativo")
+                parametros["ativo"] = ativo
+
+            if grupo:
+                condicoes.append("grupo = :grupo")
+                parametros["grupo"] = grupo
+
+            clausula_where = f"WHERE {' AND '.join(condicoes)}" if condicoes else ""
+
+            query = text(f"""
+                SELECT 
+                    id, 
+                    codigo, 
+                    nome, 
+                    grupo, 
+                    ativo, 
+                    permite_zarc, 
+                    data_cadastro
+                FROM dominio_culturas
+                {clausula_where}
+                ORDER BY nome ASC;
+            """)
+
+            res = await db_principal.execute(query, parametros)
+            culturas = res.fetchall()
+
+            if not culturas:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Nenhuma cultura localizada para os critérios fornecidos."
+                )
+
+            return [
+                {
+                    "id": c.id,
+                    "codigo": c.codigo,
+                    "nome": c.nome,
+                    "grupo": c.grupo,
+                    "ativo": c.ativo,
+                    "permite_zarc": c.permite_zarc,
+                    "data_cadastro": c.data_cadastro.isoformat() if c.data_cadastro else None
+                }
+                for c in culturas
+            ]
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erro ao consultar o domínio de culturas: {str(e)}"
         )

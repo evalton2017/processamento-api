@@ -9,6 +9,7 @@ from app.models.classificacao_model import CertificadosBpa
 from app.models.embargos_model import EmbargosOrgaos
 from app.models.gleba_model import GlebaModel
 from app.models.gleba_model import MunicipioIbge
+from app.models.models_ledger import AtestadosVmgLedger
 from app.models.notificacao_model import NotificacaoUsuarioModel
 
 
@@ -77,7 +78,7 @@ class DashboardRepository:
         total_alertas = exec_alertas.scalar() or 0
 
         # 3. Atestados Emitidos
-        stmt_atestados = select(func.count(CertificadosBpa.id))
+        stmt_atestados = select(func.count(AtestadosVmgLedger.id_atestado))
         exec_atestados = await self.db.execute(stmt_atestados)
         total_atestados = exec_atestados.scalar() or 0
 
@@ -313,21 +314,21 @@ class DashboardRepository:
             filtro_estado = f"AND m.\"sigla_uf\" = '{estado}'"
 
         query = text(f"""
-            SELECT 
+            SELECT
                 -- Total de Contratos (mapeados pelas classificações da safra)
-                COUNT(DISTINCT cc."id")::int AS total_contratos,
+                COUNT(DISTINCT cc."id_classificacao")::int AS total_contratos,
                 -- Glebas agrícolas monitoradas na safra
                 COUNT(DISTINCT g."id_gleba")::int AS total_glebas,
                 -- Área total monitorada
                 COALESCE(SUM(g."area_hectares"), 0)::float AS area_total,
-                -- Alertas ativos gerais do sistema (Sintaxe corrigida usando o cast ::text)
+                -- Alertas ativos gerais do sistema
                 (SELECT COUNT(*)::int FROM "agroprods"."notificacao_usuario" WHERE "status"::text ILIKE '%ativo%') AS alertas_ativos,
-                -- Atestados emitidos gerais do sistema (Sintaxe corrigida usando o cast ::text)
-                (SELECT COUNT(*)::int FROM "agroprods"."certificados_bpa" WHERE "status"::text ILIKE '%ativo%' OR "status"::text ILIKE '%valido%') AS atestados_emitidos,
-                -- Produtores ativos únicos na safra
-                COUNT(DISTINCT g."id_produtor")::int AS produtores_ativos
-            FROM "agroprods"."classificacoes_culturas" cc
-            JOIN "agroprods"."glebas" g ON cc."gleba_id" = g."id_gleba"
+                -- Atestados emitidos gerais do sistema
+                (SELECT COUNT(*)::int FROM audit.atestados_vmg_ledger) AS atestados_emitidos,
+                -- QUANTIDADE DE PRODUTORES CORRIGIDA (Adicionado FROM e filtro por tipo)
+                (SELECT COUNT(DISTINCT id)::int FROM agroprods.pessoa WHERE tipo = 'PRODUTOR') AS produtores_ativos
+            FROM audit.ia_classificacao_cultura_ledger cc
+            JOIN agroprods.glebas g  ON cc.id_gleba = g.id_gleba
             JOIN "agroprods"."municipio_ibge" m ON g."codigo_municipio" = m."codigo_municipio"
             WHERE cc."safra" = :safra {filtro_estado};
         """)

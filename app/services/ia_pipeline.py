@@ -11,7 +11,6 @@ from app.models.models_ledger import (
     HistoricoLaudosAmbientaisLedger,
     DeclaracaoGlebaPeriodoLedger
 )
-# Importação do novo barramento de eventos
 from app.events.vmg_events import vmg_event_dispatcher, EventoAnaliseConcluida
 
 # ==============================================================================
@@ -103,9 +102,6 @@ class VMGPipeline:
         data_plantio = pd.to_datetime(gleba.get("data_estimada_plantio") or data_analise)
         decendio_plantio = ((data_plantio.month - 1) * 3) + min(3, (data_plantio.day - 1) // 10 + 1)
 
-        # ==============================================================================
-        # 🟢 RESOLUÇÃO SEQUENCIAL CRÍTICA: Evita chamadas paralelas na mesma AsyncSession
-        # ==============================================================================
         laudo_ambiental = await self.compliance_repo.verificar_restricoes_portaria(id_gleba, raio_metros=500.0)
         possui_bpa = await self.service.validar_bpa(self.bpa_repo, id_produtor)
         zarc_dados = await self.zarc_repo.validar_risco_climatico(id_gleba, cultura_declarada, decendio_plantio)
@@ -142,11 +138,6 @@ class VMGPipeline:
 
         # Cálculo criptográfico encadeado usando o encoder robusto
         hash_atual = self.service.gerar_hash(payload, hash_anterior)
-
-        # ==============================================================================
-        # PERSISTÊNCIA ATÔMICA UNIFICADA (REUTILIZA A SESSÃO DO WORKER)
-        # ==============================================================================
-        # 🟢 REMOVIDO: 'async with self.db_session.begin():' para não colidir com o worker
 
         laudo_ledger = HistoricoLaudosAmbientaisLedger(
             id_gleba=id_gleba,
@@ -189,7 +180,6 @@ class VMGPipeline:
             hash_bloco=str(hash_atual)
         )
 
-        # Envia os dados para a sessão ativa vinda do worker
         self.db_session.add_all([laudo_ledger, classificacao_ledger, produtividade_ledger, declaracao_ledger])
 
         # DESACOPLAMENTO CRÍTICO: Disparo de ouvintes de eventos de negócio
@@ -206,8 +196,7 @@ class VMGPipeline:
 
         await self.ledger_repo.salvar_bloco_ledger(
             dados_ia={**payload, "confianca": float(confianca)},
-            hash_atual=str(hash_atual),
-            hash_anterior=str(hash_anterior)
+            hash_atual=str(hash_atual)
         )
 
         # Força a sincronização dos dados no banco sem encerrar a transação

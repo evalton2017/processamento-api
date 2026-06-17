@@ -1,25 +1,47 @@
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Numeric, Boolean, JSON
-from sqlalchemy import Column, Integer, String, ForeignKey
+
+from sqlalchemy import Column, Integer, String, Numeric, DateTime, Text, ForeignKey, CheckConstraint, text
+from sqlalchemy import DateTime, Numeric, Boolean, JSON, CheckConstraint
 from sqlalchemy.orm import relationship
+
 from app.database.session import Base
+
+
 # ==============================================================================
 # 1. PILAR DE CERTIFICAÇÃO E SEGURO AGRÍCOLA (Item 2)
 # ==============================================================================
 
 class AtestadosVmgLedger(Base):
     __tablename__ = "atestados_vmg_ledger"
-    __table_args__ = {"schema": "audit"}
+    __table_args__ = (
+        CheckConstraint(
+            "tipo_contrato IN ('Plano Safra', 'PSR', 'Proagro')",
+            name="atestados_vmg_ledger_tipo_contrato_check"
+        ),
+        CheckConstraint(
+            "status_validacao IN ('APROVADO', 'REPROVADO', 'PENDENTE')",
+            name="chk_status_validacao"
+        ),
+        {"schema": "audit"}
+    )
 
-    id_bloco = Column(Integer, primary_key=True)
+    # CORREÇÃO: O nome da PK no banco é 'id_atestado', não 'id_bloco'
+    id_atestado = Column(Integer, primary_key=True, autoincrement=True)
     id_gleba = Column(Integer, ForeignKey("agroprods.glebas.id_gleba"), nullable=False)
 
+    # ADICIONADO: Campos que existem no DDL mas faltavam na classe Python
+    tipo_contrato = Column(String(20), nullable=True)
+    status_validacao = Column(String(20), nullable=False)
+    estimativa_produtividade_sacas = Column(Numeric(10, 2), nullable=True)
+    data_emissao = Column(DateTime, nullable=False, default=datetime.utcnow)
+    hash_relatorio = Column(Text, nullable=False)
+
+    # Relacionamento mantido conforme sua regra de viewonly
     gleba = relationship(
         "app.models.gleba_model.GlebaModel",
         primaryjoin="AtestadosVmgLedger.id_gleba == foreign(GlebaModel.id_gleba)",
         viewonly=True
     )
-
 
 # ==============================================================================
 # 2. PILAR DE GOVERNANÇA E SEGURANÇA JURÍDICA (LGPD)

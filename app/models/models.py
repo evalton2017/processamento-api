@@ -14,6 +14,7 @@ class Pessoa(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     nome: Mapped[str] = mapped_column(String(150), nullable=False)
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    cpf_cnpj: Mapped[str] = mapped_column(String(15), unique=True, nullable=True)
     id_keycloak: Mapped[Optional[str]] = mapped_column(String(255), unique=True)
     tipo: Mapped[str] = mapped_column(String(20), nullable=False)
 

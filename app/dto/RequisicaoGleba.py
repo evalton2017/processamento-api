@@ -9,6 +9,7 @@ class RequisicaoGleba(BaseModel):
     data_estimada_plantio: str # String no formato 'YYYY-MM-DD'
     area_hectares: float   # Área calculada dinamicamente pelo mapa
     codigo_municipio: int  # Código IBGE coletado no passo 2
+    cpf_cnpj: str
 
     # Parâmetros de auditoria para o Ledger
     ip_origem: Optional[str] = "127.0.0.1"

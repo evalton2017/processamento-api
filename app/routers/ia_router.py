@@ -271,7 +271,6 @@ async def salvar_internal(
     para registrar os vereditos da IA diretamente nas tabelas estáveis do Ledger.
     """
     async with db.begin():
-        # 🟢 CORREÇÃO: Salva no modelo imutável auditado (IaClassificacaoCulturaLedger) em vez da tabela operacional antiga
         obj = IaClassificacaoCulturaLedger(
             id_gleba=payload.gleba_id,
             safra=payload.safra,
