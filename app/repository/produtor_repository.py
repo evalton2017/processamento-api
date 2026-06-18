@@ -6,6 +6,7 @@ from typing import List, Optional
 class ProdutorRepository:
     def __init__(self, session: AsyncSession):
         self.session = session
+        self.db = session
 
     async def obter_nome_produtor(self, id_produtor: int) -> str:
         query = select(text("nome")).select_from(text("agroprods.pessoa")).where(text("id = :id"))

@@ -11,7 +11,10 @@ logger = logging.getLogger(__name__)
 
 class ProdutorService:
     def __init__(self, db_session: AsyncSession):
+        # 🟢 CORREÇÃO: Inicialização de todos os atributos exigidos pelos métodos da classe
+        self.db = db_session
         self.repository = ProdutorRepository(db_session)
+        self.repo = self.repository # Cria um alias 'self.repo' para não quebrar as chamadas existentes
 
     async def obter_dados_dashboard_produtor(self, id_produtor: int, safra: str) -> Dict[str, Any]:
         logger.info(f"Consolidando dados da tela do produtor ID {id_produtor} para a safra {safra}.")
@@ -31,7 +34,6 @@ class ProdutorService:
         pct_conformidade = (area_conforme / area_total * 100) if area_total > 0 else 100.0
 
         # 4. Regra de negócio para a próxima validação automática agendada (Portaria)
-        # Mapeia dinamicamente uma data futura simulando o agendamento invisível da IA
         data_agendada = datetime.now() + timedelta(days=27)
         proxima_validacao_str = data_agendada.strftime("%d/%m/%Y")
 
