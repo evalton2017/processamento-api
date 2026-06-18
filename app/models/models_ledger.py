@@ -1,7 +1,6 @@
 from datetime import datetime
-
-from sqlalchemy import Column, Integer, String, Numeric, DateTime, Text, ForeignKey, CheckConstraint, text
-from sqlalchemy import DateTime, Numeric, Boolean, JSON, CheckConstraint
+from typing import List, Optional
+from sqlalchemy import Column, Integer, String, Numeric, DateTime, Text, ForeignKey, CheckConstraint, Boolean, JSON
 from sqlalchemy.orm import relationship
 
 from app.database.session import Base
@@ -34,11 +33,14 @@ class AtestadosVmgLedger(Base):
     data_emissao = Column(DateTime, nullable=False, default=datetime.utcnow)
     hash_relatorio = Column(Text, nullable=False)
 
+    # Relacionamento mapeado em viewonly conforme regra de isolamento do Core
     gleba = relationship(
         "GlebaModel",
         primaryjoin="AtestadosVmgLedger.id_gleba == foreign(GlebaModel.id_gleba)",
         viewonly=True
     )
+
+
 # ==============================================================================
 # 2. PILAR DE GOVERNANÇA E SEGURANÇA JURÍDICA (LGPD)
 # ==============================================================================
@@ -74,7 +76,8 @@ class IaClassificacaoCulturaLedger(Base):
     data_analise = Column(DateTime, default=datetime.utcnow, nullable=False)
     hash_bloco = Column(String, nullable=False)
 
-    gleba = relationship("GlebaModel", foreign_keys=[id_gleba])
+    # Ajustado de forma explícita para evitar colisões com chaves compostas
+    gleba = relationship("GlebaModel", primaryjoin="IaClassificacaoCulturaLedger.id_gleba == GlebaModel.id_gleba")
 
 
 class IaEstimativaProdutividadeLedger(Base):
@@ -90,7 +93,7 @@ class IaEstimativaProdutividadeLedger(Base):
     data_calculo = Column(DateTime, default=datetime.utcnow, nullable=False)
     hash_bloco = Column(String, nullable=False)
 
-    gleba = relationship("GlebaModel", foreign_keys=[id_gleba])
+    gleba = relationship("GlebaModel", primaryjoin="IaEstimativaProdutividadeLedger.id_gleba == GlebaModel.id_gleba")
 
 
 # ==============================================================================
@@ -109,10 +112,10 @@ class HistoricoLaudosAmbientaisLedger(Base):
     conflito_comunidades = Column(Boolean, nullable=False)
     raio_analisado_metros = Column(Numeric(6, 1), default=500.0, nullable=False)
     data_auditoria = Column(DateTime, default=datetime.utcnow, nullable=False)
-    laudo_detalhado_json = Column(JSON, nullable=False)  # Armazena o dump do laudo
+    laudo_detalhado_json = Column(JSON, nullable=False)
     hash_bloco = Column(String, nullable=False)
 
-    gleba = relationship("GlebaModel", foreign_keys=[id_gleba])
+    gleba = relationship("GlebaModel", primaryjoin="HistoricoLaudosAmbientaisLedger.id_gleba == GlebaModel.id_gleba")
 
 
 # ==============================================================================
@@ -135,4 +138,4 @@ class DeclaracaoGlebaPeriodoLedger(Base):
     data_registro = Column(DateTime, default=datetime.utcnow, nullable=False)
     hash_bloco = Column(String, nullable=False)
 
-    gleba = relationship("GlebaModel", foreign_keys=[id_gleba])
+    gleba = relationship("GlebaModel", primaryjoin="DeclaracaoGlebaPeriodoLedger.id_gleba == GlebaModel.id_gleba")

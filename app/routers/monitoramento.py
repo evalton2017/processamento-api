@@ -1,13 +1,15 @@
 import io
 import os
 import sys
+import logging
 from pathlib import Path
-
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 import pystac_client
 from rasterio.windows import from_bounds
-
+from typing import Dict, Any
 from app.dto.caderno import RespostaCadernoCampo
 
+logger = logging.getLogger(__name__)
 # ==============================================================================
 # LIMPEZA E ISOLAMENTO GEOGRÁFICO DE AMBIENTE (DEVE SER A PRIMEIRA COISA DO ARQUIVO)
 # ==============================================================================
@@ -43,7 +45,7 @@ from sqlalchemy import text
 from app.database.session import get_async_db
 
 from app.dto.ClimaResponse import RespostaClimaticaHistorica
-from app.services.clima_service import gerar_historico_climatico_60_meses
+from app.services.clima_service import ClimaService
 from app.services.produtividade_service import estimar_e_validar_produtividade
 from rasterio.warp import transform_bounds
 import cv2
@@ -208,118 +210,126 @@ async def download_geotiff_contrato(
 
 
     # =====================================================================
-    # 🟢 CONCLUSÃO: Rota Climatica Historica dos 60 meses da portaria
-    # =====================================================================
-    @router.get(
-        "/contrato/{id_contrato}/analise-clima",
-        response_model=RespostaClimaticaHistorica,
-        status_code=status.HTTP_200_OK
-    )
-    async def consultar_analise_climatica_historica(
-            id_contrato: int,
-            db: AsyncSession = Depends(get_async_db)
-    ):
-        """
-        Retorna o histórico climático interpolado dos últimos 60 meses da gleba
-        para atendimento das regras semestrais de auditoria da portaria.
-        """
-        try:
-            # Recupera as coordenadas centrais da área delimitada
-            query = text("""
-                         SELECT ST_Y(ST_Centroid(geometria)) as lat, ST_X(ST_Centroid(geometria)) as lon
-                         FROM agroprods.glebas
-                         WHERE id_gleba = :id_contrato;
-                         """)
+# 🟢 CONCLUSÃO: Rota Climatica Historica dos 60 meses da portaria
+# =====================================================================
+@router.get(
+    "/contrato/{id_contrato}/analise-clima",
+    response_model=RespostaClimaticaHistorica,
+    status_code=status.HTTP_200_OK
+)
+async def consultar_analise_climatica_historica(
+        id_contrato: int,
+        cultura: str = Query("SOJA", description="Cultura alvo para calibração dos limiares da portaria"),
+        db: AsyncSession = Depends(get_async_db)
+) -> Dict[str, Any]:
+    """
+    Retorna o histórico climático interpolado dos últimos 60 meses da gleba
+    para atendimento das regras semestrais de auditoria da portaria (Item 3.8.b).
+    """
+    logger.info(f"Iniciando auditoria de histórico climático para o contrato/gleba {id_contrato}.")
+    try:
+        # Instancia o serviço unificado passando a sessão assíncrona do banco
+        service = ClimaService(db)
 
-            result = await db.execute(query, {"id_contrato": id_contrato})
-            coordenadas = result.fetchone()
+        # CORREÇÃO CRÍTICA: Passa os parâmetros corretos exigidos pelo método vetorizado do Service
+        historico_clima = await service.processar_historico_climatico_60_meses(
+            id_gleba=id_contrato,
+            cultura=cultura
+        )
 
-            if not coordenadas:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Gleba de ID {id_contrato} não mapeada no ecossistema."
-                )
+        return historico_clima
 
-            # Invoca o serviço de inteligência climática passando as coordenadas da gleba
-            historico_clima = await gerar_historico_climatico_60_meses(
-                lat=float(coordenadas.lat),
-                lon=float(coordenadas.lon),
-                db_session=db
-            )
+    except ValueError as val_err:
+        logger.warning(f"Gleba inválida ou não mapeada: {str(val_err)}")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(val_err)
+        )
+    except Exception as e:
+        logger.error(f"Falha crítica ao consolidar histórico climático de 60 meses: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Falha ao consolidar histórico climático retroativo de 60 meses."
+        )
 
-            return historico_clima
 
-        except HTTPException:
-            raise
-        except Exception as e:
+# =====================================================================
+# 📘 ROTA: Caderno de Campo Individualizado por Safra (Item 3.c.XII)
+# =====================================================================
+@router.get(
+    "/contrato/{id_contrato}/caderno-campo",
+    response_model=RespostaCadernoCampo,
+    status_code=status.HTTP_200_OK
+)
+async def obter_caderno_campo_safra(
+        id_contrato: int,
+        db: AsyncSession = Depends(get_async_db)
+) -> Dict[str, Any]:
+    """
+    Fornece ao final do monitoramento um caderno de campo individualizado com as informações
+    mais relevantes identificadas durante a safra e sua estimativa de produtividade.
+    """
+    logger.info(f"Gerando caderno de campo individualizado para a gleba {id_contrato}.")
+    try:
+        # 1. Recupera as informações básicas cadastrais e os resultados reais consolidados no Ledger
+        query_dados = text("""
+                           SELECT g.id_gleba, g.area_hectares, cl.cultura_identificada, cl.percentual_confianca,
+                                  cl.safra, pr.produtividade_ia_sacas_ha, pr.volume_comercializar_declarado,
+                                  TO_CHAR(d.data_estimada_plantio, 'YYYY-MM-DD') as d_plantio,
+                                  TO_CHAR(d.data_estimada_colheita, 'YYYY-MM-DD') as d_colheita
+                           FROM agroprods.glebas g
+                                    JOIN audit.ia_classificacao_cultura_ledger cl ON g.id_gleba = cl.id_gleba
+                                    JOIN audit.ia_estimativa_produtividade_ledger pr ON g.id_gleba = pr.id_gleba AND cl.hash_bloco = pr.hash_bloco
+                                    JOIN audit.declaracao_gleba_periodo_ledger d ON g.id_gleba = d.id_gleba AND cl.hash_bloco = d.hash_bloco
+                           WHERE g.id_gleba = :id
+                           ORDER BY cl.data_analise DESC
+                               LIMIT 1;
+                           """)
+        res = await db.execute(query_dados, {"id": id_contrato})
+        registro = res.fetchone()
+
+        if not registro:
             raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Falha ao consolidar histórico climático retroativo de 60 meses: {str(e)}"
-            )
-    @router.get("/contrato/{id_contrato}/caderno-campo", response_model=RespostaCadernoCampo)
-    async def obter_caderno_campo_safra(
-            id_contrato: int,
-            db: AsyncSession = Depends(get_async_db)  # 🟢 CORREÇÃO: Utiliza a sessão assíncrona robusta e unificada
-    ):
-        """
-        Fornece ao final do monitoramento um caderno de campo individualizado com as informações
-        mais relevantes identificadas durante a safra e sua estimativa de produtividade (Item 3.c.XII).
-        """
-        try:
-            # 1. Recupera as informações básicas do talhão no SGBDOR
-            query = text("SELECT id_gleba, area_hectares FROM agroprods.glebas WHERE id_gleba = :id;")
-            res = await db.execute(query, {"id": id_contrato})
-            gleba = res.fetchone()
-
-            if not gleba:
-                raise HTTPException(status_code=404, detail="Gleba não encontrada.")
-
-            # 2. Reutiliza o motor de clima de 60 meses desenvolvido passando a lat/lon centrais da gleba se necessário
-            # 🟢 AJUSTE: Parâmetros alinhados com o padrão assíncrono chamado na rota anterior
-            query_coords = text("SELECT ST_Y(ST_Centroid(geometria)) as lat, ST_X(ST_Centroid(geometria)) as lon FROM agroprods.glebas WHERE id_gleba = :id;")
-            res_coords = await db.execute(query_coords, {"id": id_contrato})
-            coordenadas = res_coords.fetchone()
-
-            clima = await gerar_historico_climatico_60_meses(
-                lat=float(coordenadas.lat),
-                lon=float(coordenadas.lon),
-                db_session=db
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Gleba ou registros de auditoria do Ledger não localizados no sistema."
             )
 
-            # 3. Reutiliza o motor de estimativa de produtividade por IA desenvolvido
-            prod = estimar_e_validar_produtividade(
-                area_hectares=float(gleba.area_hectares),
-                sacas_desejadas_comercializar=6200.0, # Exemplo vindo do App do Produtor
-                valores_ndvi_ciclo=[0.2, 0.5, 0.88, 0.4],
-                total_chuva_ciclo_mm=510.0,
-                media_temp_ciclo_c=25.5,
-                cultura="SOJA"
-            )
+        # 2. Reutiliza o motor de clima de 60 meses passando o ID do contrato de forma limpa e performática
+        clima_service = ClimaService(db)
+        clima = await clima_service.processar_historico_climatico_60_meses(
+            id_gleba=id_contrato,
+            cultura=registro.cultura_identificada
+        )
 
-            # 4. Monta o payload unificado em conformidade estrita com o edital e com o Schema esperado
-            return {
-                "id_gleba": id_contrato,
-                "safra_ano": "2025/2026",
-                "area_hectares": float(gleba.area_hectares),
-                "analise_vegetativa_ia": {
-                    "cultura_identificada": "SOJA",
-                    "assertividade_score": 0.9450,
-                    "data_estimada_plantio": "2025-10-15",
-                    "data_estimada_colheita": "2026-02-20"
-                },
-                "diagnostico_climatico": clima.get("indicadores_acumulados", {}),
-                "alertas_ambientais_emitidos": clima.get("alertas_emitidos", []),
-                "validacao_comercial": {
-                    "produtividade_estimada_sc_ha": prod["analise_produtividade_ia"]["produtividade_estimada_sacas_por_hectare"],
+        # 3. Lógica matemática de validação de volume condizente (Evita dependência de funções mockadas externas)
+        volume_estimado_total = float(registro.area_hectares) * float(registro.produtividade_ia_sacas_ha)
+        volume_declarado_condizente = bool(float(registro.volume_comercializar_declarado) <= (volume_estimado_total * 1.10))
 
-                    # 🟢 CORREÇÃO: Chave ajustada mapeando para "volume_total_estimado_sacas" sem a palavra "_gleba"
-                    "volume_total_estimado_sacas": prod["analise_produtividade_ia"]["volume_total_estimado_gleba_sacas"],
-
-                    "volume_declarado_condizente": prod["validacao_vmg"]["volume_condizente_com_capacidade_talhao"]
-                }
+        # 4. Monta o payload unificado em conformidade estrita com o edital do MAPA e Schema Pydantic
+        return {
+            "id_gleba": id_contrato,
+            "safra_ano": registro.safra,
+            "area_hectares": float(registro.area_hectares),
+            "analise_vegetativa_ia": {
+                "cultura_identificada": registro.cultura_identificada,
+                "assertividade_score": float(registro.percentual_confianca),
+                "data_estimada_plantio": registro.d_plantio,
+                "data_estimada_colheita": registro.d_colheita
+            },
+            "diagnostico_climatico": clima.get("indicadores_acumulados", {}),
+            "alertas_ambientais_emitidos": clima.get("alertas_emitidos", []),
+            "validacao_comercial": {
+                "produtividade_estimada_sc_ha": float(registro.produtividade_ia_sacas_ha),
+                "volume_total_estimado_sacas": round(volume_estimado_total, 2),
+                "volume_declarado_condizente": volume_declarado_condizente
             }
+        }
 
-        except HTTPException:
-            raise
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Erro ao compilar caderno de campo: {str(e)}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erro crítico ao compilar caderno de campo para a gleba {id_contrato}: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Erro interno no servidor ao consolidar o relatório do caderno de campo."
+        )

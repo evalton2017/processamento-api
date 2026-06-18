@@ -5,7 +5,7 @@ from typing import Dict, Any, Optional
 
 from app.database.session import get_async_db
 from app.dto.analista.filtro_analista_gleba import RespostaTabelaGlebasNovaDTO
-from app.services.analista_service import AnalistaService
+from app.services.analista.analista_service import AnalistaService
 
 logger = logging.getLogger(__name__)
 

@@ -1,5 +1,7 @@
 import logging
 import time
+from typing import Dict
+
 import numpy as np
 import pandas as pd
 
@@ -122,3 +124,48 @@ def interpolar_idw(
     # Média ponderada dos valores climáticos
     valor_interpolado = np.sum(pesos * valores) / np.sum(pesos)
     return float(valor_interpolado)
+
+def executar_interpolacao_clima_gleba(
+        lat_gleba: float,
+        lon_gleba: float,
+        df_todas_estacoes_inmet: pd.DataFrame,
+        coluna_temperatura: str = "temp_c",
+        coluna_chuva: str = "chuva_mm"
+) -> Dict[str, float]:
+    """
+    Função unificadora (Facade) para o pipeline de IA.
+    Triangula as 3 estações operantes mais próximas e executa o algoritmo
+    IDW para retornar as duas variáveis climáticas prioritárias exigidas na Portaria.
+    """
+    try:
+        # 1. Executa a triangulação dinâmica isolando as 3 bases operantes mais próximas
+        df_triangulado = selecionar_tres_estacoes_proximas(
+            lat_gleba=lat_gleba,
+            lon_gleba=lon_gleba,
+            df_estacoes_inmet=df_todas_estacoes_inmet
+        )
+
+        # 2. Executa a interpolação IDW para Temperatura
+        temperatura_final = interpolar_idw(
+            lat_gleba=lat_gleba,
+            lon_gleba=lon_gleba,
+            estacoes_trianguladas=df_triangulado,
+            parametro_clima=coluna_temperatura
+        )
+
+        # 3. Executa a interpolação IDW para Chuva
+        chuva_final = interpolar_idw(
+            lat_gleba=lat_gleba,
+            lon_gleba=lon_gleba,
+            estacoes_trianguladas=df_triangulado,
+            parametro_clima=coluna_chuva
+        )
+
+        return {
+            "temperatura": round(temperatura_final, 2),
+            "chuva": round(chuva_final, 2)
+        }
+
+    except Exception as e:
+        logger.error(f"Erro ao processar interpolação IDW para a gleba: {str(e)}", exc_info=True)
+        raise e

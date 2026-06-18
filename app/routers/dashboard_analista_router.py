@@ -1,14 +1,14 @@
 import logging
 from fastapi import APIRouter, Depends, Query, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List
 from sqlalchemy import select
 
 from app.database.session import get_async_db
 from app.dto.eventos_climaticos_response import EventoClimaticoResponse
 from app.dto.ultimos_atestados_response import UltimosAtestadosResponse
 from app.models.classificacao_model import ClassificacoesCulturas
-from app.services.dashboard_service import DashboardService
+from app.services.analista.dashboard_service import DashboardService
 
 logger = logging.getLogger(__name__)
 
