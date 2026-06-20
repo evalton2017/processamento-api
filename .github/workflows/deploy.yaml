@@ -50,16 +50,15 @@ jobs:
           username: ${{ secrets.USERNAME }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: 2214
-          script: |
+          script: |           
             mkdir -p ~/develop/proc-api
             cd ~/develop/proc-api
             echo "${{ secrets.ENV_FILE }}" > .env
             echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_HUB_USERNAME }}" --password-stdin
+          
             cd ~/develop
-            docker network inspect traefik-network >/dev/null 2>&1 || docker network create traefik-network
+            docker network inspect root_traefik-net >/dev/null 2>&1 || docker network create root_traefik-net
             
-            # 3. Pull apenas do serviço restrito
-             docker compose -f docker-compose-deploy.yml pull api-python-rest taskiq-worker-ia
-            
-            # 4. Força a recriação do ambiente com a imagem nova baixada do Docker Hub
+            # OTIMIZAÇÃO: Pull e Up em um único fluxo limpo
+            docker compose -f docker-compose-deploy.yml pull api-python-rest taskiq-worker-ia && \
             docker compose -f docker-compose-deploy.yml up -d --force-recreate --remove-orphans api-python-rest taskiq-worker-ia
