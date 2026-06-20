@@ -1,8 +1,9 @@
 from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, text, func, Row
-from typing import List, Optional, Any
+from sqlalchemy import select, text, func, Row, case, and_, Numeric
+from typing import List, Optional, Any, cast
 
+from app.models import HistoricoLaudosAmbientaisLedger
 from app.models.gleba_model import GlebaModel
 from app.models.models import Pessoa
 from app.models.models_ledger import ConsentimentoLgpdLedger
@@ -67,22 +68,89 @@ class GlebaRepository:
         res = await self.db.execute(query, {"id_produtor": id_produtor})
         return res.fetchall()
 
-def buscar_registros_por_decendio(self, municipio_ibge: int, cultura: str, decendio: int) -> List[Any]:
-    """
-    Executa a consulta na tabela oficial filtrando pelo cenário escolhido.
-    """
-    query = text("""
-                 SELECT id, municipio_ibge, cultura, tipo_solo, grupo_risco, decendio_plantio, risco_admissivel
-                 FROM agroprods.zarc_zoneamento
-                 WHERE municipio_ibge = :municipio
-                   AND UPPER(cultura) = :cultura
-                   AND decendio_plantio = :decendio
-                 """)
+    def buscar_registros_por_decendio(self, municipio_ibge: int, cultura: str, decendio: int) -> List[Any]:
+        """
+        Executa a consulta na tabela oficial filtrando pelo cenário escolhido.
+        """
+        query = text("""
+                     SELECT id, municipio_ibge, cultura, tipo_solo, grupo_risco, decendio_plantio, risco_admissivel
+                     FROM agroprods.zarc_zoneamento
+                     WHERE municipio_ibge = :municipio
+                       AND UPPER(cultura) = :cultura
+                       AND decendio_plantio = :decendio
+                     """)
 
-    resultado = self.db.execute(query, {
-        "municipio": municipio_ibge,
-        "cultura": cultura.strip().upper(),
-        "decendio": decendio
-    })
+        resultado = self.db.execute(query, {
+            "municipio": municipio_ibge,
+            "cultura": cultura.strip().upper(),
+            "decendio": decendio
+        })
 
-    return resultado.fetchall()
+        return resultado.fetchall()
+
+    async def listar_glebas_com_conformidade_auditada(self, id_produtor: int):
+        """
+        Query de alta performance e compatibilidade: Utiliza o operador de extração textual
+        JSONB '->>' de forma explícita para ler a nota de auditoria sem gerar conflitos de tipo.
+        """
+        # Subquery para isolar o ID do laudo mais recente de cada gleba no Ledger imutável
+        subquery_recente = (
+            select(
+                HistoricoLaudosAmbientaisLedger.id_gleba,
+                func.max(HistoricoLaudosAmbientaisLedger.id_laudo).label("max_id")
+            )
+            .group_by(HistoricoLaudosAmbientaisLedger.id_gleba)
+            .subquery()
+        )
+
+        query = (
+            select(
+                GlebaModel.id_gleba,
+                GlebaModel.id_produtor,
+                GlebaModel.codigo_car,
+                # Converte o binário PostGIS do banco para string WKT compatível com o Leaflet
+                func.ST_AsText(GlebaModel.geometria).label("geometria"),
+                GlebaModel.area_hectares,
+                GlebaModel.data_criacao,
+                GlebaModel.data_estimada_plantio,
+                GlebaModel.cultura_declarada,
+
+                # REGRA 1: Avalia se existe algum flag de conflito físico ativo no Ledger
+                case(
+                    (
+                        and_(
+                            HistoricoLaudosAmbientaisLedger.id_laudo.is_not(None),
+                            case(
+                                (HistoricoLaudosAmbientaisLedger.conflito_socioambiental == True, 1),
+                                (HistoricoLaudosAmbientaisLedger.conflito_prodes == True, 1),
+                                (HistoricoLaudosAmbientaisLedger.conflito_ibama_icmbio == True, 1),
+                                (HistoricoLaudosAmbientaisLedger.conflito_comunidades == True, 1),
+                                else_=0
+                            ) == 1
+                        ),
+                        "NAO_CONFORME"
+                    ),
+                    else_="CONFORME"
+                ).label("status_vmg"),
+
+                # CORREÇÃO CRÍTICA DA REGRA 2: Utiliza o operador nativo '->>' do Postgres via .op()
+                # para extrair a propriedade 'nota_conformidade_pct' diretamente como número decimal limpo.
+                func.coalesce(
+                    func.cast(
+                        HistoricoLaudosAmbientaisLedger.laudo_detalhado_json.op('->>')('nota_conformidade_pct'),
+                        Numeric(5, 2)
+                    ),
+                    100.0
+                ).label("conformidade_pct")
+            )
+            .outerjoin(subquery_recente, subquery_recente.c.id_gleba == GlebaModel.id_gleba)
+            .outerjoin(
+                HistoricoLaudosAmbientaisLedger,
+                HistoricoLaudosAmbientaisLedger.id_laudo == subquery_recente.c.max_id
+            )
+            .where(GlebaModel.id_produtor == id_produtor)
+            .order_by(GlebaModel.id_gleba.desc())
+        )
+
+        resultado = await self.db.execute(query)
+        return resultado.all()

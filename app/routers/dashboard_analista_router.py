@@ -7,7 +7,6 @@ from sqlalchemy import select
 from app.database.session import get_async_db
 from app.dto.eventos_climaticos_response import EventoClimaticoResponse
 from app.dto.ultimos_atestados_response import UltimosAtestadosResponse
-from app.models.classificacao_model import ClassificacoesCulturas
 from app.services.analista.dashboard_service import DashboardService
 
 logger = logging.getLogger(__name__)
@@ -119,40 +118,6 @@ async def listar_ultimos_atestados_emitidos(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Erro interno ao compilar os atestados emitidos pelo ledger: {str(e)}"
         )
-
-
-@router.get("/filtros-agricolas", status_code=status.HTTP_200_OK)
-async def obter_filtros_agricolas_wizard(
-        db_principal: AsyncSession = Depends(get_async_db)
-):
-    """
-    Retorna listas únicas de safras e culturas extraídas das
-    classificações para alimentar os dropdowns do planejamento agronômico.
-    """
-    try:
-        async with db_principal.begin():
-            stmt_safras = select(ClassificacoesCulturas.safra).distinct().order_by(ClassificacoesCulturas.safra.desc())
-            exec_safras = await db_principal.execute(stmt_safras)
-            safras = exec_safras.scalars().all()
-
-            stmt_culturas = select(ClassificacoesCulturas.cultura_predita).distinct().order_by(ClassificacoesCulturas.cultura_predita.asc())
-            exec_culturas = await db_principal.execute(stmt_culturas)
-            culturas = exec_culturas.scalars().all()
-
-            lista_safras = list(safras) if safras else ["2024/2025", "2025/2026", "2026/2027"]
-            lista_culturas = list(culturas) if culturas else ["Soja", "Milho", "Algodão", "Feijão"]
-
-            return {
-                "safras": lista_safras,
-                "culturas": lista_culturas
-            }
-
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Erro ao processar catálogo de parâmetros agrícolas: {str(e)}"
-        )
-
 
 # ==========================================
 # 🚀 NOVOS ENDPOINTS DO DASHBOARD

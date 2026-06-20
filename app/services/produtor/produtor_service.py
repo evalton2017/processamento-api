@@ -131,3 +131,4 @@ class ProdutorService:
                 detail=f"Erro ao geocodificar centróide via coordenadas numéricas: {str(e)}"
             )
 
+

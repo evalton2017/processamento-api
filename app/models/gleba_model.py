@@ -1,15 +1,14 @@
 # app/models/gleba_model.py
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, func, Numeric,Date,Text
-from sqlalchemy.orm import relationship
+from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, func, Numeric, Date, Text
+from sqlalchemy.orm import relationship, foreign
 from geoalchemy2 import Geometry
 
 from app.database.session import Base
-
-from app.models.classificacao_model import ClassificacoesCulturas
 from app.models.notificacao_model import NotificacaoUsuarioModel
 from app.models.models_ledger import AtestadosVmgLedger
-# =============================================================
+# Importamos o modelo do ledger do schema audit que centralizará a inteligência de conformidade
+from app.models.models_ledger import HistoricoLaudosAmbientaisLedger
 
 class GlebaModel(Base):
     __tablename__ = "glebas"
@@ -19,7 +18,10 @@ class GlebaModel(Base):
     id_produtor = Column(Integer, nullable=False)
     codigo_car = Column(String(50), nullable=True)
     codigo_municipio = Column(Integer, ForeignKey("agroprods.municipio_ibge.codigo_municipio"), nullable=True)
-    geometria = Column(String, nullable=False)
+
+    # CORREÇÃO CRÍTICA: Ajustado para o tipo Geometry para suportar as consultas espaciais do PostGIS
+    geometria = Column(Geometry("POLYGON", srid=4326), nullable=False)
+
     area_hectares = Column(Numeric(10, 2), nullable=False)
     volume_declarado_comercializar = Column(Numeric(10, 2), nullable=False)
     data_estimada_colheita = Column(DateTime, nullable=True)
@@ -28,10 +30,16 @@ class GlebaModel(Base):
     cultura_declarada = Column(String(255), nullable=True)
 
     municipio = relationship("MunicipioIbge", back_populates="glebas", lazy="select")
-
-    # Agora o SQLAlchemy encontrará a classe perfeitamente em qualquer thread/processo
-    classificacoes = relationship("ClassificacoesCulturas", back_populates="gleba", cascade="all, delete-orphan")
     notificacoes = relationship("NotificacaoUsuarioModel", back_populates="gleba", cascade="all, delete-orphan")
+
+    # Relacionamento unificado com o livro-razão de laudos ambientais (Schema audit)
+    laudos_ledger = relationship(
+        "HistoricoLaudosAmbientaisLedger",
+        primaryjoin="GlebaModel.id_gleba == foreign(HistoricoLaudosAmbientaisLedger.id_gleba)",
+        viewonly=True,
+        order_by="desc(HistoricoLaudosAmbientaisLedger.id_laudo)",
+        lazy="select"
+    )
 
     atestados_ledger = relationship(
         "AtestadosVmgLedger",
@@ -64,7 +72,8 @@ class DocumentoTecnico(Base):
     titulo = Column(String(200), nullable=False)
     tipo = Column(String(50), nullable=False)
     caminho_arquivo = Column(String(500), nullable=False)
-    data_upload = Column(DateTime, default=datetime.utcnow, nullable=False)
+    data_upload = Column(DateTime, default=func.now(), nullable=False)
+
 
 class MetadadosRaster(Base):
     __tablename__ = "metadados_raster"
@@ -76,8 +85,7 @@ class MetadadosRaster(Base):
     ndvi_mean = Column(Float, nullable=True)
     ndvi_std = Column(Float, nullable=True)
     cloud_cover = Column(Float, nullable=True)
-    raster_url = Column(Text, nullable=False)  # Nova coluna de destino do download
+    raster_url = Column(Text, nullable=False)
     hash_sha256 = Column(String(64), nullable=True)
 
-    # Mapeamento do tipo de geometria PostGIS se necessário
     geom = Column(Geometry("GEOMETRY", srid=4326), nullable=True)

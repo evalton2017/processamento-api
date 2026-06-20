@@ -76,11 +76,15 @@ async def consultar_gleba(
     return await service.obter_gleba(id_contrato)
 
 
-@router.get("/{id_produtor}/glebas", response_model=List[RespostaGlebas])
-async def consultar_glebas_por_produtor(
+@router.get("/{id_produtor}/glebas", response_model=List[RespostaGlebas], status_code=status.HTTP_200_OK)
+async def consultar_glebas_por_produtor_auditadas(
         id_produtor: int,
         db_principal: AsyncSession = Depends(get_async_db)
 ):
+    """
+    Retorna a listagem de geometrias WKT e metadados de conformidade
+    extraídos do Ledger imutável do schema audit para renderização no mapa.
+    """
     service = GlebaService(db_principal)
     return await service.listar_glebas_por_produtor(id_produtor)
 

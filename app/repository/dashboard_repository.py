@@ -306,7 +306,7 @@ class DashboardRepository:
 
     async def get_metricas_safra(self, safra: str, estado: str = "Todos") -> Dict[str, Any]:
         """
-        Calcula os volumes agregados baseados na tabela glebas e classificacoes_culturas.
+        Calcula os volumes agregados baseados na tabela glebas e atestados_vmg_ledger.
         Corrige a sintaxe eliminando o operador 'AS text' da cláusula WHERE e adotando '::text'.
         """
         filtro_estado = ""

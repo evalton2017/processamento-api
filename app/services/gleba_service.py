@@ -84,15 +84,25 @@ class GlebaService:
                 detail=f"Erro ao recuperar dados da gleba: {str(e)}",
             )
 
-    async def listar_glebas_por_produtor(self, id_produtor: int) -> List[Dict[str, Any]]:
-        try:
-            linhas = await self.repo.obter_glebas_por_produtor(id_produtor)
-            return [self._formatar_resposta_gleba(g) for g in linhas]
-        except Exception as e:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Erro ao recuperar a listagem de glebas: {str(e)}",
-            )
+    async def listar_glebas_por_produtor(self, id_produtor: int) -> list:
+        dados_brutos = await self.repo.listar_glebas_com_conformidade_auditada(id_produtor)
+
+        lista_formatada = []
+        for r in dados_brutos:
+            lista_formatada.append({
+                "id_gleba": r.id_gleba,
+                "id_produtor": r.id_produtor,
+                "codigo_car": r.codigo_car,
+                "geometria": r.geometria,
+                "area_hectares": float(r.area_hectares),
+                "data_criacao": r.data_criacao.strftime("%d/%m/%Y") if isinstance(r.data_criacao, datetime) else "",
+                "data_estimada_plantio": r.data_estimada_plantio.strftime("%d/%m/%Y") if isinstance(r.data_estimada_plantio, datetime) else "",
+                "cultura_declarada": r.cultura_declarada if r.cultura_declarada else "Não Declarada",
+                "status_vmg": r.status_vmg,
+                "conformidade_pct": float(r.conformidade_pct)
+            })
+
+        return lista_formatada
 
     def _formatar_resposta_gleba(self, gleba: Any) -> Dict[str, Any]:
         """Método auxiliar para mapear a linha do banco para a estrutura de dicionário."""
