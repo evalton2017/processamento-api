@@ -1,12 +1,14 @@
-import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.routers import produtor
-from app.routers import produtor, monitoramento, produtividade_router, ia_router, auditoria_router
+from app.routers import (produtor_router, monitoramento, produtividade_router, ia_router,
+                         auditoria_router, dashboard_analista_router, analista_router, dashboard_produtor_router)
 
 app = FastAPI(
     title="Infraestrutura VMG - Agro Brasil + Sustentável",
     description="API de Monitoramento Complementar e Verificação Agrícola",
+    openapi_url="/api/v1/openapi.json",
+    docs_url="/api/v1/docs",
+    redoc_url="/api/v1/redoc",
     version="1.0.0"
 )
 
@@ -20,18 +22,22 @@ app.add_middleware(
 )
 
 # Inclusão dos módulos de rotas
-app.include_router(produtor.router)
+app.include_router(dashboard_analista_router.router)
+app.include_router(dashboard_produtor_router.router)
+app.include_router(analista_router.router)
+app.include_router(produtor_router.router)
 app.include_router(monitoramento.router)
 app.include_router(produtividade_router.router)
 app.include_router(ia_router.router)
 app.include_router(auditoria_router.router)
 
+
 @app.get("/health", tags=["Infraestrutura"])
 async def health_check():
     return {"status": "OPERANTE", "disponibilidade_sla": "99.9%"}
 
-# vvv ADICIONE ESTE BLOCO NO FINAL DO ARQUIVO vvv
+# Bloco de inicialização do sistema
 if __name__ == "__main__":
     import uvicorn
-    # Usa a referência direta do objeto 'app' em vez da string para evitar erros de importação no Windows
+    # Mantido o objeto 'app' direto para compatibilidade e estabilidade no Windows
     uvicorn.run(app, host="127.0.0.1", port=8000, reload=False)

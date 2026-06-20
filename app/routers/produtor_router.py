@@ -1,4 +1,7 @@
-from fastapi import APIRouter, Depends, status
+from datetime import date, datetime
+
+from fastapi import APIRouter, Depends, status, HTTPException
+from fastapi import APIRouter, Query, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List, Optional
@@ -8,15 +11,52 @@ from app.database.session import get_async_db
 from app.dto.municipio_response import MunicipioResponse
 
 # Importação dos modelos estruturados por schema
-
 from app.dto.RequisicaoGleba import RequisicaoGleba
+from app.dto.produtor.panejamento_dto import PlanejamentoAgronomicoDTO, ZoneamentoZarcResponse, \
+    JanelaSugerida, ValidarZarcSimplificadoResponse, ValidarZarcRequest
 from app.dto.response.gleba_response import RespostaGlebas
+from app.repository.zarc_repository import ZarcRepository
 
 from app.services.dominio_service import DomínioService
 from app.services.gleba_service import GlebaService
 from app.services.produtor.produtor_service import ProdutorService
+from app.services.validacoes.validacao_zarc_service import ValidacaoZarcService
 
 router = APIRouter(prefix="/api/v1/produtor", tags=["Produtor Rural"])
+
+# ==============================================================================
+# NOVO ENDPOINT DE VALIDAÇÃO AGROCLIMÁTICA (ZARC)
+# ==============================================================================
+
+class ValidarZarcRequest(BaseModel):
+    id_gleba: int
+    municipio_ibge: int
+    cultura: str
+    safra: str
+    volumeDeclaradoComercializar: float
+    dataEstimadaPlantio: datetime
+    dataEstimadaColheita: datetime
+
+class ValidarZarcSimplificadoResponse(BaseModel):
+    status_validacao: str
+    mensagem: str
+
+def mapear_decendio_para_periodo(decendio: int, ano: int = 2026) -> str:
+    meses = [
+        "Jan", "Fev", "Mar", "Abr", "Mai", "Jun",
+        "Jul", "Ago", "Set", "Out", "Nov", "Dez"
+    ]
+    # Cada mês tem exatamente 3 decêndios
+    mes_idx = (decendio - 1) // 3
+    sub_decendio = (decendio - 1) % 3
+
+    if sub_decendio == 0:
+        return f"01 a 10 de {meses[mes_idx]}"
+    elif sub_decendio == 1:
+        return f"11 a 20 de {meses[mes_idx]}"
+    else:
+        # Simplificação de dias finais (28 a 31 dependendo do mês)
+        return f"21 a 30/31 de {meses[mes_idx]}"
 
 @router.post("/cadastrar-gleba", status_code=status.HTTP_201_CREATED)
 async def cadastrar_gleba_vmg(
@@ -89,3 +129,44 @@ async def listar_dominio_culturas(
 ):
     service = DomínioService(db_principal)
     return await service.obter_dominio_culturas(ativo=ativo, grupo=grupo)
+
+# --- Rota de Validação Limpa e Injetada ---
+@router.post("/validar-zarc", response_model=ValidarZarcSimplificadoResponse)
+async def cadastrar_gleba_vmg(
+        payload: ValidarZarcRequest,
+        db_principal: AsyncSession = Depends(get_async_db)
+):
+    """
+    Endpoint de validação que delega a lógica de banco ao Repository e a validação ao Service.
+    """
+    # Instancia as camadas injetando as dependências de trás para frente
+    repository = ZarcRepository(db_principal)
+    service = ValidacaoZarcService(repository)
+
+    # Executa a regra isolada extraindo apenas a data pura (.date()) para o serviço
+    resultado = await service.validar_planejamento_zarc(payload)
+
+    return ValidarZarcSimplificadoResponse(**resultado)
+
+@router.get("/janela-geral", response_model=ZoneamentoZarcResponse)
+async def obter_janela_geral_zarc(
+        cultura: str = Query(..., description="Nome da cultura (ex: Arroz)"),
+        municipio_ibge: int = Query(..., description="Código IBGE do município"),
+        db_principal: AsyncSession = Depends(get_async_db)
+):
+    """
+    Consome dinamicamente a tabela oficial de riscos do ZARC (agroprods.zarc_zoneamento)
+    para alimentar os cards clicáveis do front-end Angular.
+    """
+    repository = ZarcRepository(db_principal)
+    service = ValidacaoZarcService(repository)
+
+    resultado = await service.consultar_janela_geral_zarc(
+        municipio_ibge=municipio_ibge,
+        cultura=cultura
+    )
+
+    return resultado
+# ==============================================================================
+# ENDPOINTS REMANESCENTES DO PRODUTOR RURAL (PRESERVADOS INTACTOS)
+# ==============================================================================

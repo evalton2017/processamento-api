@@ -22,7 +22,7 @@ class GlebaRepository:
         res = await self.db.execute(query, {"numero_car": numero_car})
         return res.fetchone()
 
-    async def salvar_gleba(self, dados, data_plantio: datetime) -> GlebaModel:
+    async def salvar_gleba(self, dados, data_plantio: datetime, data_estimada_colheita: datetime) -> GlebaModel:
         nova_gleba = GlebaModel(
             id_produtor=dados.id_produtor,
             codigo_car=dados.numero_car,
@@ -30,6 +30,8 @@ class GlebaRepository:
             data_estimada_plantio=data_plantio,
             area_hectares=dados.area_hectares,
             codigo_municipio=dados.codigo_municipio,
+            volume_declarado_comercializar = dados.volume_declarado_comercializar,
+            data_estimada_colheita = data_estimada_colheita,
             geometria=func.ST_GeomFromText(dados.geometria, 4326)
         )
         self.db.add(nova_gleba)
@@ -64,3 +66,23 @@ class GlebaRepository:
                      """)
         res = await self.db.execute(query, {"id_produtor": id_produtor})
         return res.fetchall()
+
+def buscar_registros_por_decendio(self, municipio_ibge: int, cultura: str, decendio: int) -> List[Any]:
+    """
+    Executa a consulta na tabela oficial filtrando pelo cenário escolhido.
+    """
+    query = text("""
+                 SELECT id, municipio_ibge, cultura, tipo_solo, grupo_risco, decendio_plantio, risco_admissivel
+                 FROM agroprods.zarc_zoneamento
+                 WHERE municipio_ibge = :municipio
+                   AND UPPER(cultura) = :cultura
+                   AND decendio_plantio = :decendio
+                 """)
+
+    resultado = self.db.execute(query, {
+        "municipio": municipio_ibge,
+        "cultura": cultura.strip().upper(),
+        "decendio": decendio
+    })
+
+    return resultado.fetchall()

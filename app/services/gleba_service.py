@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, date
 from fastapi import HTTPException, status
 from typing import List, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -35,7 +35,9 @@ class GlebaService:
 
                 # 3. Conversão de data e salvamento da Gleba
                 data_plantio = datetime.strptime(dados.data_estimada_plantio, "%Y-%m-%d")
-                nova_gleba = await self.repo.salvar_gleba(dados, data_plantio)
+                data_estimada_colheita = datetime.strptime(dados.data_estimada_colheita, "%Y-%m-%d")
+                nova_gleba = await self.repo.salvar_gleba(dados, data_plantio,data_estimada_colheita)
+
 
                 # 4. Salvar Consentimento LGPD
                 ip = dados.ip_origem or "127.0.0.1"
@@ -104,4 +106,49 @@ class GlebaService:
             "cultura_declarada": gleba.cultura_declarada,
             "data_estimada_plantio": gleba.data_estimada_plantio.date() if hasattr(gleba.data_estimada_plantio, 'date') else gleba.data_estimada_plantio,
             "codigo_municipio": gleba.codigo_municipio
+        }
+
+    def calcular_decendio_da_data(self, data_alvo: date) -> int:
+        """Calcula matematicamente o decêndio do ano civil (1 a 36)"""
+        mes = data_alvo.month
+        dia = data_alvo.day
+        decendio_base = (mes - 1) * 3
+
+        if dia <= 10:
+            return decendio_base + 1
+        elif dia <= 20:
+            return decendio_base + 2
+        else:
+            return decendio_base + 3
+
+    def validar_planejamento_agricola(self, municipio_ibge: int, cultura: str, data_plantio: date) -> Dict[str, Any]:
+        """
+        Orquestra a regra de negócio do ZARC cruzando o calendário com o banco de dados.
+        """
+        # 1. Calcula o decêndio da data escolhida pelo produtor
+        decendio_usuario = self.calcular_decendio_da_data(data_plantio)
+
+        # 2. Consulta o repositório para checar a tabela zarc_zoneamento
+        registros = self.repository.buscar_registros_por_decendio(municipio_ibge, cultura, decendio_usuario)
+
+        # 3. Regra de Decisão Agroclimática
+        if not registros:
+            return {
+                "status_validacao": "INCONFORME",
+                "mensagem": (
+                    f"A data de plantio ({data_plantio.strftime('%d/%m/%Y')}) corresponde ao decêndio {decendio_usuario}. "
+                    f"Este período não possui zoneamento permitido ou apresenta risco climático superior a 40% "
+                    f"para a cultura de {cultura} neste município."
+                )
+            }
+
+        # Caso encontre registros validos, extrai o menor risco dos solos mapeados
+        menor_risco_encontrado = min([r.risco_admissivel for r in registros])
+
+        return {
+            "status_validacao": "CONFORME",
+            "mensagem": (
+                f"Operação validada! O plantio no decêndio {decendio_usuario} está em conformidade com as "
+                f"diretrizes da tabela oficial do ZARC, apresentando risco de {menor_risco_encontrado}% para a cultura de {cultura}."
+            )
         }

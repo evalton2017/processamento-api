@@ -1,6 +1,9 @@
 # app/repository/zarc_repository.py
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import text
+from sqlalchemy import text, select, and_
+
+from app.models.zarc_model import ZarcZoneamento
+
 
 class ZarcRepository:
     def __init__(self, session: AsyncSession):
@@ -49,3 +52,58 @@ class ZarcRepository:
             "grupo_risco": "N/A",
             "risco_admissivel": 20.0
         }
+
+    async def buscar_janelas_permitidas(self, municipio_ibge: int, cultura: str, safra: str) -> list[ZarcZoneamento]:
+        """
+        Busca todas as janelas com risco admissível <= 20% filtrando por município, cultura e safra.
+        """
+        query = (
+            select(ZarcZoneamento)
+            .where(
+                and_(
+                    ZarcZoneamento.municipio_ibge == municipio_ibge,
+                    ZarcZoneamento.cultura.ilike(cultura),
+                    ZarcZoneamento.safra == safra.strip(),
+                    ZarcZoneamento.risco_admissivel <= 20.00
+                )
+            )
+            .order_by(ZarcZoneamento.decendio_plantio.asc())
+        )
+        execucao = await self.session.execute(query)
+        return list(execucao.scalars().all())
+
+    async def buscar_regra_por_decendio(self, municipio_ibge: int, cultura: str, safra: str, decendio: int) -> ZarcZoneamento | None:
+        """
+        Busca a regra de risco específica para um decêndio e safra propostos.
+        """
+        query = (
+            select(ZarcZoneamento)
+            .where(
+                and_(
+                    ZarcZoneamento.municipio_ibge == municipio_ibge,
+                    ZarcZoneamento.cultura.ilike(cultura),
+                    ZarcZoneamento.safra == safra.strip(),
+                    ZarcZoneamento.decendio_plantio == decendio
+                )
+            )
+        )
+        resultado = await self.session.execute(query)
+        return resultado.scalar_one_or_none()
+
+    async def obter_calendario_zarc_municipio(self, municipio_ibge: int, cultura: str) -> list[ZarcZoneamento]:
+        """
+        Busca todos os decêndios e riscos cadastrados na tabela oficial
+        para alimentar a listagem geral do front-end.
+        """
+        query = (
+            select(ZarcZoneamento)
+            .where(
+                and_(
+                    ZarcZoneamento.municipio_ibge == municipio_ibge,
+                    ZarcZoneamento.cultura.ilike(cultura)
+                )
+            )
+            .order_by(ZarcZoneamento.decendio_plantio.asc())
+        )
+        execucao = await self.session.execute(query)
+        return list(execucao.scalars().all())
