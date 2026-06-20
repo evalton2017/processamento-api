@@ -1,7 +1,7 @@
 from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, text, func, Row
-from typing import List, Optional
+from typing import List, Optional, Any
 
 from app.models.gleba_model import GlebaModel
 from app.models.models import Pessoa
