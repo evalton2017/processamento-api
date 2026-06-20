@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import List, Optional
+
 from sqlalchemy import Column, Integer, String, Numeric, DateTime, Text, ForeignKey, CheckConstraint, Boolean, JSON
 from sqlalchemy.orm import relationship
 
@@ -40,7 +40,6 @@ class AtestadosVmgLedger(Base):
         viewonly=True
     )
 
-
 # ==============================================================================
 # 2. PILAR DE GOVERNANÇA E SEGURANÇA JURÍDICA (LGPD)
 # ==============================================================================
@@ -77,8 +76,10 @@ class IaClassificacaoCulturaLedger(Base):
     hash_bloco = Column(String, nullable=False)
 
     # Ajustado de forma explícita para evitar colisões com chaves compostas
-    gleba = relationship("GlebaModel", primaryjoin="IaClassificacaoCulturaLedger.id_gleba == GlebaModel.id_gleba")
-
+    gleba = relationship(
+        "GlebaModel",
+        primaryjoin="IaClassificacaoCulturaLedger.id_gleba == GlebaModel.id_gleba"
+    )
 
 class IaEstimativaProdutividadeLedger(Base):
     __tablename__ = "ia_estimativa_produtividade_ledger"
@@ -93,7 +94,11 @@ class IaEstimativaProdutividadeLedger(Base):
     data_calculo = Column(DateTime, default=datetime.utcnow, nullable=False)
     hash_bloco = Column(String, nullable=False)
 
-    gleba = relationship("GlebaModel", primaryjoin="IaEstimativaProdutividadeLedger.id_gleba == GlebaModel.id_gleba")
+    gleba = relationship(
+        "GlebaModel",
+        primaryjoin="IaEstimativaProdutividadeLedger.id_gleba == GlebaModel.id_gleba"
+    )
+
 
 
 # ==============================================================================
@@ -115,8 +120,10 @@ class HistoricoLaudosAmbientaisLedger(Base):
     laudo_detalhado_json = Column(JSON, nullable=False)
     hash_bloco = Column(String, nullable=False)
 
-    gleba = relationship("GlebaModel", primaryjoin="HistoricoLaudosAmbientaisLedger.id_gleba == GlebaModel.id_gleba")
-
+    gleba = relationship(
+        "GlebaModel",
+        primaryjoin="HistoricoLaudosAmbientaisLedger.id_gleba == GlebaModel.id_gleba"
+    )
 
 # ==============================================================================
 # 5. PILAR DE DECLARAÇÕES DO PRODUTOR E VALIDACÃO ZARC/BPA (Item 3.6)
@@ -138,4 +145,7 @@ class DeclaracaoGlebaPeriodoLedger(Base):
     data_registro = Column(DateTime, default=datetime.utcnow, nullable=False)
     hash_bloco = Column(String, nullable=False)
 
-    gleba = relationship("GlebaModel", primaryjoin="DeclaracaoGlebaPeriodoLedger.id_gleba == GlebaModel.id_gleba")
+    gleba = relationship(
+        "GlebaModel",
+        primaryjoin="DeclaracaoGlebaPeriodoLedger.id_gleba == GlebaModel.id_gleba"
+    )

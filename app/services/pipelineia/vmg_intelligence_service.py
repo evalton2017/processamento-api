@@ -1,25 +1,17 @@
-import asyncio
 import hashlib
 import json
 import logging
 import os
 from datetime import datetime
 
-import rasterio
-from pyproj import Transformer
-from shapely.ops import transform as shapely_transform
-
 print(os.environ.get("PROJ_LIB"))
 print(os.environ.get("GDAL_DATA"))
 
 from typing import Dict, Any, List
 
-import httpx
 import joblib
 import numpy as np
 from pystac_client import Client
-from rasterio.io import MemoryFile
-from rasterio.mask import mask
 from scipy.interpolate import RBFInterpolator
 from shapely.geometry import mapping
 from shapely.wkt import loads
@@ -31,7 +23,6 @@ class VMGIntelligenceService:
 
     def __init__(self):
         base_dir = os.path.dirname(os.path.abspath(__file__))
-
         self.modelo_classificacao = joblib.load(
             os.path.join(base_dir, "modelos", "classificador_culturas.pkl")
         )
@@ -59,7 +50,14 @@ class VMGIntelligenceService:
         if perfil_ndvi.size == 0:
             return {"cultura": "DESCONHECIDO", "confianca": 0.0}
 
-        X = perfil_ndvi.flatten().reshape(1, -1)
+        # --- CORREÇÃO AQUI: Garante que o NDVI ocupe exatamente as 60 posições esperadas ---
+        ndvi_plano = perfil_ndvi.flatten()
+        if len(ndvi_plano) != 60:
+            logger.warning(f"Ajustando dimensionalidade do NDVI na classificação de {len(ndvi_plano)} para 60 posições.")
+            ndvi_plano = np.resize(ndvi_plano, (60,))
+
+        X = ndvi_plano.reshape(1, -1)
+        # ---------------------------------------------------------------------------------
 
         # Executa a inferência usando o modelo treinado (Scikit-Learn/XGBoost)
         probs = self.modelo_classificacao.predict_proba(X)[0]
@@ -69,7 +67,9 @@ class VMGIntelligenceService:
             0: "SOJA",
             1: "MILHO",
             2: "ALGODAO",
-            3: "PASTAGEM"
+            3: "PASTAGEM",
+            4: "CAFE",
+            5: "ARROZ"
         }
 
         return {
@@ -88,7 +88,6 @@ class VMGIntelligenceService:
         Calcula a estimativa de sacas por hectare garantindo o alinhamento
         estrito de 63 features exigido pelo modelo treinado no gerar_modelos.py.
         """
-        # Adaptação para o novo modelo baseado em COG Streaming (lista de dicionários)
         if isinstance(perfil_ndvi, list):
             valores_media = [item["ndvi_mean"] for item in perfil_ndvi]
             perfil_ndvi = np.array(valores_media, dtype=np.float32)
@@ -198,10 +197,7 @@ class VMGIntelligenceService:
                 raster_url=imagem["raster_url"],
                 hash_sha256=imagem["hash_sha256"],
                 geom=geometria_wkt,
-                cloud_cover=imagem["cloud_cover"], # Nome do parâmetro corrigido
-                # Se você já calcula a média/desvio do NDVI no stream, passe aqui:
-                # ndvi_mean=imagem.get("ndvi_mean"),
-                # ndvi_std=imagem.get("ndvi_std"),
+                cloud_cover=imagem["cloud_cover"]
             )
 
     async def buscar_imagens_sentinel_stream(
@@ -232,9 +228,6 @@ class VMGIntelligenceService:
                 # O link para a composição visual (renderizada) ou banda específica do COG
                 # Geralmente usa-se a URL do próprio Item STAC ou do asset visual/banda principal
                 raster_url = item.assets["visual"].href  # Ou monte uma estrutura/string com as bandas se necessário
-
-                # Gera o hash SHA256 da URL (ou do ID do item) para auditoria do MAPA
-                # Garante que a origem do dado nunca mude
                 hash_sha256 = hashlib.sha256(raster_url.encode("utf-8")).hexdigest()
 
                 yield {
