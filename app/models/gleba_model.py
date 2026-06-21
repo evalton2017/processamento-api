@@ -28,6 +28,7 @@ class GlebaModel(Base):
     data_criacao = Column(DateTime, server_default=func.now())
     data_estimada_plantio = Column(DateTime, nullable=True)
     cultura_declarada = Column(String(255), nullable=True)
+    nome_gleba = Column(String(255), nullable=True)
 
     municipio = relationship("MunicipioIbge", back_populates="glebas", lazy="select")
     notificacoes = relationship("NotificacaoUsuarioModel", back_populates="gleba", cascade="all, delete-orphan")

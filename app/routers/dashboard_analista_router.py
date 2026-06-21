@@ -1,13 +1,14 @@
 import logging
 from fastapi import APIRouter, Depends, Query, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import Dict, Any, List
-from sqlalchemy import select
+from typing import Dict, Any, List, Optional
 
 from app.database.session import get_async_db
-from app.dto.eventos_climaticos_response import EventoClimaticoResponse
-from app.dto.ultimos_atestados_response import UltimosAtestadosResponse
+from app.dto.response.ClimaResponse import ClimaResumoEstadoDTO
+from app.dto.response.eventos_climaticos_response import EventoClimaticoResponse
+from app.dto.response.ultimos_atestados_response import UltimosAtestadosResponse
 from app.services.analista.dashboard_service import DashboardService
+from app.services.produtor.dashboard_produtor_service import DashboardProdutorService
 
 logger = logging.getLogger(__name__)
 
@@ -245,20 +246,18 @@ async def obter_ia_produtividade_estimada(
     return resposta.get("dados", {})
 
 
-@router.get("/resumo-climatico", status_code=status.HTTP_200_OK)
-async def obter_ia_resumo_climatico(
-        estado: str = Query("Todos", description="Filtro geográfico de UF."),
-        db: AsyncSession = Depends(get_async_db)
-) -> Dict[str, Any]:
+@router.get("/resumo-climatico", response_model=List[ClimaResumoEstadoDTO], status_code=status.HTTP_200_OK)
+async def obter_resumo_meteorologico_inmet(
+        dias: int = 60,
+        uf: Optional[str] = Query(None, description="Filtro opcional por sigla do Estado (Ex: GO, MG, Todos)"),
+        db_principal: AsyncSession = Depends(get_async_db)
+):
     """
-    Retorna os indicadores climatológicos históricos consolidados via Service.
+    Endpoint macro-regional: Retorna o balanço de séries climáticas do INMET por Estado (UF),
+    permitindo filtragem opcional ou consolidação global de todas as bases.
     """
-    service = DashboardService(db)
-    resposta = await service.obter_ia_resumo_climatico(estado=estado)
-
-    if not resposta.get("sucesso"):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=resposta.get("mensagem"))
-    return resposta.get("dados", {})
+    service = DashboardService(db_principal)
+    return await service.obter_resumo_climatico_global_ou_estado(dias=dias, uf=uf)
 
 @router.get(
     "/eventos-climaticos",

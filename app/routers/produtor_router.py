@@ -1,20 +1,22 @@
-from datetime import date, datetime
+from datetime import datetime
 
-from fastapi import APIRouter, Depends, status, HTTPException
-from fastapi import APIRouter, Query, HTTPException
+from fastapi import Depends, status
+from fastapi import APIRouter, Query
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List, Optional
 
 # Importação da sessão unificada criada no passo anterior
 from app.database.session import get_async_db
-from app.dto.municipio_response import MunicipioResponse
+from app.dto.response.ClimaResponse import ValidarZarcRequest
+from app.dto.response.municipio_response import MunicipioResponse
 
 # Importação dos modelos estruturados por schema
 from app.dto.RequisicaoGleba import RequisicaoGleba
-from app.dto.produtor.panejamento_dto import PlanejamentoAgronomicoDTO, ZoneamentoZarcResponse, \
-    JanelaSugerida, ValidarZarcSimplificadoResponse, ValidarZarcRequest
-from app.dto.response.gleba_response import RespostaGlebas
+from app.dto.produtor.panejamento_dto import ZoneamentoZarcResponse,ValidarZarcSimplificadoResponse
+from app.dto.response.gleba_response import RespostaGlebas, RespostaConsultaGlebasPainel, KpisResumoGlebas, \
+    ItemTabelaGleba
+from app.repository.gleba_repository import GlebaRepository
 from app.repository.zarc_repository import ZarcRepository
 
 from app.services.dominio_service import DomínioService
@@ -27,19 +29,6 @@ router = APIRouter(prefix="/api/v1/produtor", tags=["Produtor Rural"])
 # ==============================================================================
 # NOVO ENDPOINT DE VALIDAÇÃO AGROCLIMÁTICA (ZARC)
 # ==============================================================================
-
-class ValidarZarcRequest(BaseModel):
-    id_gleba: int
-    municipio_ibge: int
-    cultura: str
-    safra: str
-    volumeDeclaradoComercializar: float
-    dataEstimadaPlantio: datetime
-    dataEstimadaColheita: datetime
-
-class ValidarZarcSimplificadoResponse(BaseModel):
-    status_validacao: str
-    mensagem: str
 
 def mapear_decendio_para_periodo(decendio: int, ano: int = 2026) -> str:
     meses = [
@@ -171,6 +160,59 @@ async def obter_janela_geral_zarc(
     )
 
     return resultado
-# ==============================================================================
-# ENDPOINTS REMANESCENTES DO PRODUTOR RURAL (PRESERVADOS INTACTOS)
-# ==============================================================================
+
+@router.get("/{id_produtor}/consulta-glebas", response_model=RespostaConsultaGlebasPainel, status_code=status.HTTP_200_OK)
+async def obter_painel_gerencial_glebas_produtor(
+        id_produtor: int,
+        safra: str = Query("2026/2027", description="Filtro de safra selecionado na barra superior"),
+        db_principal: AsyncSession = Depends(get_async_db)
+):
+    """
+    Retorna a estrutura consolidada para o painel de gerenciamento do produtor rural,
+    contendo os contadores estatísticos superiores e a listagem de registros da tabela.
+    """
+    repo = GlebaRepository(db_principal)
+    linhas_banco = await repo.obter_painel_completo_glebas(id_produtor, safra)
+
+    # Contadores reativos locais para alimentar os KPIs superiores
+    total_cadastradas = len(linhas_banco)
+    total_conformes = 0
+    total_em_analise = 0
+    total_alertas = 0
+
+    lista_glebas_formatada = []
+
+    for r in linhas_banco:
+        # Incrementa os contadores com base no status real deduzido do Ledger
+        if r.status == "Conforme":
+            total_conformes += 1
+        elif r.status == "Em analise":
+            total_em_analise += 1
+        elif r.status == "Alerta":
+            total_alertas += 1
+
+        lista_glebas_formatada.append(
+            ItemTabelaGleba(
+                id_gleba=r.id_gleba,
+                codigo=r.codigo,
+                nome_gleba=f"Fazenda {r.cultura_declarada} {r.id_gleba}" if not r.nome_gleba else r.nome_gleba,
+                municipio=r.municipio,
+                cultura_declarada=r.cultura_declarada if r.cultura_declarada else "Não Informada",
+                area_ha=float(r.area_ha),
+                status=r.status,
+                ultima_atualizacao=r.ultima_atualizacao.strftime("%d/%m/%Y %H:%M") if r.ultima_atualizacao else "",
+                geometria=r.geometria
+            )
+        )
+
+    # Consolida o DTO final simétrico ao layout do dashboard do frontend Angular
+    return RespostaConsultaGlebasPainel(
+        kpis=KpisResumoGlebas(
+            total_cadastradas=total_cadastradas,
+            total_conformes=total_conformes,
+            total_em_analise=total_em_analise,
+            total_alertas=total_alertas,
+            proxima_validacao="15/07/2026" # Fixado conforme a agenda de regulação do MAPA
+        ),
+        glebas=lista_glebas_formatada
+    )

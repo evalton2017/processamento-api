@@ -1,6 +1,8 @@
 from datetime import datetime
 
-from sqlalchemy import Column, Integer, String, Numeric, DateTime, Text, ForeignKey, CheckConstraint, Boolean, JSON
+from geoalchemy2 import Geometry
+from sqlalchemy import Column, Integer, String, Numeric, DateTime, Text, ForeignKey, CheckConstraint, Boolean, JSON, \
+    func
 from sqlalchemy.orm import relationship
 
 from app.database.session import Base
@@ -149,3 +151,14 @@ class DeclaracaoGlebaPeriodoLedger(Base):
         "GlebaModel",
         primaryjoin="DeclaracaoGlebaPeriodoLedger.id_gleba == GlebaModel.id_gleba"
     )
+
+class CarFeicoesAmbientais(Base):
+    __tablename__ = 'car_feicoes_ambientais'
+    __table_args__ = {'schema': 'agroprods'}
+
+    id_car_feicao = Column('id', Integer, primary_key=True, autoincrement=True)
+    geom = Column(Geometry(geometry_type='MULTIPOLYGON', srid=4326), nullable=False)
+    codigo_car = Column('cod_imovel', String(100), nullable=False, index=True)
+    tipo_feicao = Column(String(50), nullable=False)
+    area_hectares = Column(Numeric(10, 2), nullable=True)
+    data_cadastro = Column(DateTime, server_default=func.current_timestamp())

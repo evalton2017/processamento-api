@@ -1,6 +1,7 @@
 from pydantic import BaseModel, Field
 from typing import List, Optional
-from datetime import date
+from datetime import date, datetime
+
 
 # --- MODELOS DE ENTRADA (REQUEST SCHEMAS) ---
 
@@ -35,3 +36,37 @@ class RespostaClimaticaHistorica(BaseModel):
     metadados_solicitacao: MetadadosSolicitacao
     indicadores_acumulados: IndicadoresAcumulados
     alertas_emitidos: List[AlertaClimatico] = Field(default=[], description="Lista de anomalias meteorológicas severas detectadas.")
+
+class ClimaResumoResponse(BaseModel):
+    chuva_acumulada_mm: float = Field(..., example=654.0)
+    variacao_chuva_pct: float = Field(..., example=-8.0)
+    temp_media_celsius: float = Field(..., example=24.8)
+    variacao_temp_celsius: float = Field(..., example=0.6)
+    dias_sem_chuva: int = Field(..., example=126)
+    variacao_dias_sem_chuva: float = Field(..., example=16.0)
+    vel_vento_kmh: float = Field(..., example=12.4)
+    variacao_vel_vento: float = Field(..., example=-1.2)
+
+class ClimaResumoEstadoDTO(BaseModel):
+    uf: str = Field(..., example="GO")
+    chuva_acumulada_mm: float = Field(..., example=654.0)
+    variacao_chuva_pct: float = Field(..., example=-8.0)
+    temp_media_celsius: float = Field(..., example=24.8)
+    variacao_temp_celsius: float = Field(..., example=0.6)
+    dias_sem_chuva: int = Field(..., example=126)
+    variacao_dias_sem_chuva: float = Field(..., example=16.0)
+    vel_vento_kmh: float = Field(..., example=12.4)
+    variacao_vel_vento: float = Field(..., example=-1.2)
+
+class ValidarZarcRequest(BaseModel):
+    id_gleba: int
+    municipio_ibge: int
+    cultura: str
+    safra: str
+    volumeDeclaradoComercializar: float
+    dataEstimadaPlantio: datetime
+    dataEstimadaColheita: datetime
+
+class ValidarZarcSimplificadoResponse(BaseModel):
+    status_validacao: str
+    mensagem: str

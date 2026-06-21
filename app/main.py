@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.routers import (produtor_router, monitoramento, produtividade_router, ia_router,
-                         auditoria_router, dashboard_analista_router, analista_router, dashboard_produtor_router)
+                         auditoria_router, dashboard_analista_router, analista_router, dashboard_produtor_router, gleba_router)
 import app.models
 
 app = FastAPI(
@@ -27,6 +27,7 @@ app.include_router(dashboard_analista_router.router)
 app.include_router(dashboard_produtor_router.router)
 app.include_router(analista_router.router)
 app.include_router(produtor_router.router)
+app.include_router(gleba_router.router)
 app.include_router(monitoramento.router)
 app.include_router(produtividade_router.router)
 app.include_router(ia_router.router)

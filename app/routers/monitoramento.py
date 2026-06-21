@@ -3,7 +3,7 @@ import os
 import sys
 import logging
 from pathlib import Path
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import Query
 import pystac_client
 from rasterio.windows import from_bounds
 from typing import Dict, Any
@@ -44,9 +44,8 @@ from sqlalchemy import text
 # 🟢 CORREÇÃO: Importa a sessão assíncrona robusta que unifica os múltiplos schemas
 from app.database.session import get_async_db
 
-from app.dto.ClimaResponse import RespostaClimaticaHistorica
+from app.dto.response.ClimaResponse import RespostaClimaticaHistorica
 from app.services.clima_service import ClimaService
-from app.services.produtividade_service import estimar_e_validar_produtividade
 from rasterio.warp import transform_bounds
 import cv2
 

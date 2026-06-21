@@ -524,21 +524,45 @@ class DashboardRepository:
             "volume_estimado_sacas": round(row.volume_total)
         }
 
-    async def get_ia_resumo_climatico(self, estado: str) -> Dict[str, Any]:
+    async def obter_dados_climaticos_globais_por_estado(self, data_limite: datetime, uf: Optional[str] = None) -> List[Any]:
         """
-        Retorna o histórico consolidado climático dos últimos 60 meses na região.
+        Query meteorológica regionalizada: Consolida as médias do INMET agrupadas por Estado (UF),
+        trazendo APENAS as regiões que possuem glebas agrícolas cadastradas na base.
         """
-        # Exemplo de agregação histórica baseada no seu feed climático operacional
-        return {
-            "chuva_acumulada_mm": 654,
-            "variacao_chuva_pct": -8,
-            "temp_media_celsius": 24.8,
-            "variacao_temp_celsius": 0.6,
-            "dias_sem_chuva": 126,
-            "variacao_dias_sem_chuva": 16,
-            "vel_vento_kmh": 12.4,
-            "variacao_vel_vento": -1.2
-        }
+        sql_base = """
+                   SELECT
+                       UPPER(TRIM(e.uf)) AS estado_uf,
+                       COALESCE(SUM(s.chuva_mm), 0) AS total_chuva,
+                       COALESCE(AVG(s.temp_c), 0) AS avg_temperatura,
+                       COALESCE(AVG(s.vento_velocidade), 0) AS avg_vento,
+                       COUNT(*) FILTER (WHERE s.chuva_mm = 0) AS dias_secos
+                   FROM agroprods.series_climaticas_diarias s
+                            JOIN agroprods.estacoes_inmet e ON e.id = s.id_estacao
+                   WHERE s.data >= :data_limite
+                     AND UPPER(e.status) = 'OPERANTE'
+
+                     -- REGRA: Filtra apenas os estados que possuem feições geográficas de glebas ativas
+                     AND UPPER(TRIM(e.uf)) IN (
+                       SELECT DISTINCT UPPER(TRIM(m.sigla_uf))
+                       FROM agroprods.municipio_ibge m
+                                JOIN agroprods.glebas g ON g.codigo_municipio = m.codigo_municipio
+                       WHERE g.codigo_municipio IS NOT NULL
+                   ) \
+                   """
+
+        parametros = {"data_limite": data_limite}
+
+        if uf and uf.strip() and uf.upper() != "TODOS":
+            sql_base += " AND UPPER(TRIM(e.uf)) = :uf "
+            parametros["uf"] = uf.strip().upper()
+
+        sql_base += """
+            GROUP BY UPPER(TRIM(e.uf))
+            ORDER BY estado_uf ASC;
+        """
+
+        resultado = await self.db.execute(text(sql_base), parametros)
+        return resultado.all()
 
     async def buscar_eventos_climaticos_ledger(self, limite_meses: int = 60) -> List[Row]:
         """Consulta as tabelas imutáveis do Ledger consolidando a série histórica total de 60 meses."""

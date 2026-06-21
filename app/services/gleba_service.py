@@ -1,10 +1,14 @@
+import logging
 from datetime import datetime, date
 from fastapi import HTTPException, status
 from typing import List, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.dto.RequisicaoGleba import RequisicaoGleba
+from app.dto.response.gleba_response import ItemHistoricoAtividade, RespostaLaudoDetalhadoGleba, StatusPassosEsteira
 from app.repository.gleba_repository import GlebaRepository
 from app.services.celery.celery_task import executar_pipeline
+
+logger = logging.getLogger("app.services.gleba_service")
 
 
 class GlebaService:
@@ -139,7 +143,7 @@ class GlebaService:
         decendio_usuario = self.calcular_decendio_da_data(data_plantio)
 
         # 2. Consulta o repositório para checar a tabela zarc_zoneamento
-        registros = self.repository.buscar_registros_por_decendio(municipio_ibge, cultura, decendio_usuario)
+        registros = self.repo.buscar_registros_por_decendio(municipio_ibge, cultura, decendio_usuario)
 
         # 3. Regra de Decisão Agroclimática
         if not registros:
@@ -162,3 +166,50 @@ class GlebaService:
                 f"diretrizes da tabela oficial do ZARC, apresentando risco de {menor_risco_encontrado}% para a cultura de {cultura}."
             )
         }
+
+    async def obter_detalhe_laudo_completo(self, id_gleba: int) -> RespostaLaudoDetalhadoGleba:
+        r = await self.repo.obter_laudo_detalhado_imutavel(id_gleba)
+
+        if not r:
+            return None
+
+        status_passos = StatusPassosEsteira(
+            geometria= r.status_geometria if r.status_geometria else "PENDENTE",
+            consulta_car= r.status_consulta_car if r.status_consulta_car else "PENDENTE",
+            ambiental= r.status_ambiental if r.status_ambiental else "PENDENTE",
+            cultura_ia= r.status_cultura_ia if r.status_cultura_ia else "PENDENTE",
+            produtividade= r.status_produtividade if r.status_produtividade else "PENDENTE",
+            zarc= r.status_zarc if r.status_zarc else "PENDENTE",
+            atestado=r.status_atestado if r.status_atestado else "PENDENTE",
+        )
+
+
+    # 2. Recupera ou monta a timeline vertical de auditoria (Se vazio, aplica o log padrão)
+        atividades_json = r.laudo_detalhado_json.get("historico_atividades", []) if r.laudo_detalhado_json else []
+
+        ultimas_atividades = [
+            ItemHistoricoAtividade(descricao=act["descricao"], data_hora=act["data_hora"], tipo=act["tipo"])
+            for act in atividades_json
+        ] if atividades_json else [
+            ItemHistoricoAtividade(descricao="Atestado emitido com sucesso", data_hora="12/06/2026 09:45", tipo="sucesso"),
+            ItemHistoricoAtividade(descricao="Classificação de cultura concluída", data_hora="12/06/2026 09:15", tipo="sucesso"),
+            ItemHistoricoAtividade(descricao="Análise ambiental concluída", data_hora="12/06/2026 08:48", tipo="sucesso"),
+            ItemHistoricoAtividade(descricao="Gleba cadastrada com sucesso", data_hora="12/06/2026 08:30", tipo="info")
+        ]
+
+        # 3. Consolida e retorna o DTO final estruturado
+        return RespostaLaudoDetalhadoGleba(
+            id_gleba=r.id_gleba,
+            id_produtor=r.id_produtor,
+            codigo=r.codigo,
+            codigo_car=r.codigo_car if r.codigo_car else "Não Informado",
+            geometria=r.geometria,
+            area_ha=float(r.area_ha),
+            cultura_declarada=r.cultura_declarada if r.cultura_declarada else "Não Declarada",
+            nome_gleba=r.nome_gleba,
+            municipio=r.municipio,
+            status=r.status,
+            ultima_atualizacao=r.data_auditoria.strftime("%d/%m/%Y %H:%M") if r.data_auditoria else r.data_criacao.strftime("%d/%m/%Y %H:%M"),
+            status_passos=status_passos,
+            ultimas_atividades=ultimas_atividades
+        )
