@@ -4,7 +4,6 @@ from narwhals import Decimal
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text, select, desc
 
-from app.models.models import ClassificacaoCultura
 from app.models.models_ledger import AtestadosVmgLedger
 
 

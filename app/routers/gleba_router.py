@@ -9,13 +9,13 @@ from app.services.gleba_service import GlebaService
 router = APIRouter(prefix="/api/v1/gleba", tags=["Glebas"])
 
 @router.get("/{id_gleba}/laudo-detalhado", response_model=RespostaLaudoDetalhadoGleba, status_code=status.HTTP_200_OK)
-async def obter_laudo_detalhado_gleba_auditada(
+async def obter_laudo_detalhado_analise_vmg(
         id_gleba: int,
         db_principal: AsyncSession = Depends(get_async_db)
 ):
     """
-    Retorna o detalhamento completo do laudo imutável da esteira de análises VMG,
-    alimentando o componente inferior do mapa e as timelines de atividades.
+    Endpoint Unificado: Alimenta de uma única vez a esteira horizontal,
+    o painel de pendências e as caixas de informações do ZARC do dashboard analítico.
     """
     service = GlebaService(db_principal)
     resultado = await service.obter_detalhe_laudo_completo(id_gleba)
@@ -23,7 +23,6 @@ async def obter_laudo_detalhado_gleba_auditada(
     if not resultado:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Nenhum laudo ou registro localizado para a gleba informada: {id_gleba}."
+            detail=f"Laudo analítico não localizado para a gleba {id_gleba}."
         )
-
     return resultado

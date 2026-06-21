@@ -1,5 +1,5 @@
 # app/dto/response/gleba_response.py ou dentro de produtor_router.py
-from typing import List
+from typing import List, Optional
 
 from pydantic import BaseModel, Field, ConfigDict
 from pydantic.alias_generators import to_camel
@@ -51,19 +51,44 @@ class RespostaConsultaGlebasPainel(BaseModel):
 
 class StatusPassosEsteira(BaseModel):
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
-    geometria: str = Field(..., example="CONCLUIDO")
-    consulta_car: str = Field(..., example="CONCLUIDO")
-    ambiental: str = Field(..., example="CONCLUIDO")
-    cultura_ia: str = Field(..., example="CONCLUIDO")
-    zarc: str = Field(..., example="EM_ANDAMENTO")
-    produtividade: str = Field(..., example="CONCLUIDO")
-    atestado: str = Field(..., example="CONCLUIDO")
+    geometria: str
+    consulta_car: str
+    ambiental: str
+    cultura_ia: str
+    zarc: str
+    produtividade: str
+    atestado: str
+
+class BlocoPendencias(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+    descricao: Optional[str] = None
+    recomendacao: Optional[str] = None
 
 class ItemHistoricoAtividade(BaseModel):
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
     descricao: str = Field(..., example="Atestado emitido com sucesso")
     data_hora: str = Field(..., example="12/06/2026 09:45")
     tipo: str = Field(..., example="sucesso") # "sucesso", "info", "alerta"
+
+
+class DetalheBlocoZarc(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+    portaria: str = Field(..., example="148, de 02/06/2025")
+    grupo_de_risco: str = Field(..., example="Médio")
+    risco_admissivel: str = Field(..., example="30%")
+    janela_de_plantio: str = Field(..., example="01/10 a 20/11")
+    sua_data_estimada: str = Field(..., example="15/12/2025")
+
+class ResumoAnalisesCard(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+    ambiental_status: str = Field(..., example="Conforme")
+    ambiental_desc: str = Field(..., example="Sem conflitos ambientais")
+    cultura_ia_status: str = Field(..., example="Condizente")
+    cultura_ia_desc: str = Field(..., example="Soja (92% confiança)")
+    produtividade_status: str = Field(..., example="Concluído")
+    produtividade_desc: str = Field(..., example="72 sc/ha Estimativa média")
+    atestado_status: str = Field(..., example="Emitido")
+    atestado_desc: str = Field(..., example="Válido até 12/06/2027")
 
 class RespostaLaudoDetalhadoGleba(BaseModel):
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
@@ -80,3 +105,5 @@ class RespostaLaudoDetalhadoGleba(BaseModel):
     ultima_atualizacao: str
     status_passos: StatusPassosEsteira
     ultimas_atividades: List[ItemHistoricoAtividade]
+    informacoes_zarc: DetalheBlocoZarc
+    resumo_analises: ResumoAnalisesCard
