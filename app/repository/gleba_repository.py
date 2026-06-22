@@ -5,7 +5,7 @@ from datetime import datetime
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, Row, case, and_, Numeric, text, cast, String
-from typing import List, Optional, Any
+from typing import List, Optional, Any, Dict
 
 from app.models import HistoricoLaudosAmbientaisLedger, IaClassificacaoCulturaLedger, IaEstimativaProdutividadeLedger, \
     DeclaracaoGlebaPeriodoLedger, AtestadosVmgLedger
