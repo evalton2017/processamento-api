@@ -1,24 +1,22 @@
-from datetime import datetime
+from typing import List
 
-from fastapi import Depends, status
 from fastapi import APIRouter, Query
+from fastapi import Depends, status
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import List, Optional
 
+from app.cache.cache_service import ZarcCacheService
 # Importação da sessão unificada criada no passo anterior
 from app.database.session import get_async_db
-from app.dto.response.ClimaResponse import ValidarZarcRequest
-from app.dto.response.municipio_response import MunicipioResponse
-
 # Importação dos modelos estruturados por schema
 from app.dto.RequisicaoGleba import RequisicaoGleba
-from app.dto.produtor.panejamento_dto import ZoneamentoZarcResponse,ValidarZarcSimplificadoResponse
+from app.dto.produtor.panejamento_dto import ZoneamentoZarcResponse, ValidarZarcSimplificadoResponse
+from app.dto.response.ClimaResponse import ValidarZarcRequest, CulturaZarcResponse
 from app.dto.response.gleba_response import RespostaGlebas, RespostaConsultaGlebasPainel, KpisResumoGlebas, \
     ItemTabelaGleba
+from app.dto.response.municipio_response import MunicipioResponse
 from app.repository.gleba_repository import GlebaRepository
 from app.repository.zarc_repository import ZarcRepository
-
 from app.services.dominio_service import DomínioService
 from app.services.gleba_service import GlebaService
 from app.services.produtor.produtor_service import ProdutorService
@@ -114,14 +112,34 @@ async def calcular_area_geometria_postgis(
     return await service.calcular_area_geometria(dados.geometria)
 
 
-@router.get("/culturas", status_code=status.HTTP_200_OK)
-async def listar_dominio_culturas(
-        grupo: Optional[str] = None,
-        ativo: Optional[bool] = True,
+@router.get("/culturas", response_model=List[CulturaZarcResponse])
+async def obter_culturas_cadastradas_vmg(
         db_principal: AsyncSession = Depends(get_async_db)
 ):
-    service = DomínioService(db_principal)
-    return await service.obter_dominio_culturas(ativo=ativo, grupo=grupo)
+    """
+    Lista as culturas ativas do ZARC homologadas para a Infraestrutura VMG.
+    Busca prioritariamente do cache Redis de inicialização para máxima performance.
+    """
+    from app.main import redis_client  # Importa o cliente ativo do main
+    cache_service = ZarcCacheService(redis_client)
+
+    # 1. Tenta recuperar da memória RAM (O(1))
+    culturas = await cache_service.obter_culturas_cache()
+
+    if culturas:
+        return culturas  # Retorna imediatamente sem tocar no banco de dados!
+
+    repository = ZarcRepository(db_principal)
+    linhas_sql = await repository.listar_culturas(ativo=True, grupo="GRÃOS")
+
+    return [
+        {
+            "id": row.id, "codigo": row.codigo, "nome": row.nome,
+            "grupo": row.grupo, "ativo": row.ativo, "permite_zarc": row.permite_zarc,
+            "data_cadastro": row.data_cadastro
+        }
+        for row in linhas_sql
+    ]
 
 # --- Rota de Validação Limpa e Injetada ---
 @router.post("/validar-zarc", response_model=ValidarZarcSimplificadoResponse)
@@ -143,20 +161,23 @@ async def cadastrar_gleba_vmg(
 
 @router.get("/janela-geral", response_model=ZoneamentoZarcResponse)
 async def obter_janela_geral_zarc(
-        cultura: str = Query(..., description="Nome da cultura (ex: Arroz)"),
+        cultura: str = Query(..., description="Nome da cultura (ex: Feijão)"),
         municipio_ibge: int = Query(..., description="Código IBGE do município"),
+        safra: str = Query(..., description="Safra vigente selecionada (ex: 2026/2027)"),  # 🟢 INCLUÍDO
         db_principal: AsyncSession = Depends(get_async_db)
 ):
     """
     Consome dinamicamente a tabela oficial de riscos do ZARC (agroprods.zarc_zoneamento)
-    para alimentar os cards clicáveis do front-end Angular.
+    para alimentar os cards clicáveis do front-end Angular baseando-se no ano da safra ativa.
     """
     repository = ZarcRepository(db_principal)
     service = ValidacaoZarcService(repository)
 
+    # O service agora recebe a safra para calcular o range correto de datas
     resultado = await service.consultar_janela_geral_zarc(
         municipio_ibge=municipio_ibge,
-        cultura=cultura
+        cultura=cultura,
+        safra=safra  # 🟢 REPASSADO PARA O SERVIÇO
     )
 
     return resultado

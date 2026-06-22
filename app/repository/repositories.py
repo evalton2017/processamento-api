@@ -1,9 +1,11 @@
 from typing import List, Dict, Any
 from datetime import datetime, timedelta, timezone
 from narwhals import Decimal
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text, select, desc
-
+from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy import table, column, String, Integer
 from app.models.models_ledger import AtestadosVmgLedger
 
 
@@ -158,6 +160,51 @@ class SoloRepository:
                 "ndvi_std": ndvi_std,
             },
         )
+
+    async def salvar_dados_para_treinamento(
+            self,
+            gleba_id: int,
+            safra: str,
+            ndvi: list,
+            cultura_real: str
+    ) -> None:
+        """
+        Salva os vetores de índices de vegetação estruturados para a base de retreino da IA.
+        Garante conformidade técnica com o compilador Core do SQLAlchemy 2.0.
+        """
+        # 1. 🟢 CORREÇÃO: Define a estrutura da tabela virtual usando o Core explicitamente
+        # Isso substitui o text() e impede o erro de 'TextClause object' no compilador
+        tabela_treino = table(
+            "treinamento_culturas",
+            column("gleba_id", Integer),
+            column("safra", String),
+            column("ndvi", JSONB),
+            column("cultura_real", String),
+            schema="agroprods"  # Garante o roteamento correto para dentro do seu schema
+        )
+
+        # 2. Monta a instrução de inserção em lote para o dialeto PostgreSQL
+        query_upsert = insert(tabela_treino).values(
+            gleba_id=int(gleba_id),
+            safra=str(safra),
+            ndvi=ndvi,       # O driver asyncpg processará a lista como um objeto JSONB válido
+            cultura_real=str(cultura_real).upper().strip()
+        )
+
+        # 3. Define o comportamento caso ocorra duplicidade (UPSERT)
+        stmt_final = query_upsert.on_conflict_do_update(
+            index_elements=["gleba_id", "safra"],  # Nome dos campos do seu unique constraint
+            set_={
+                "ndvi": query_upsert.excluded.ndvi,
+                "cultura_real": query_upsert.excluded.cultura_real
+            }
+        )
+
+        # 4. Executa utilizando a sessão ativa identificada no seu repositório
+        if hasattr(self, "session"):
+            await self.session.execute(stmt_final)
+        elif hasattr(self, "db_session"):
+            await self.db_session.execute(stmt_final)
 # =========================================================
 # CLIMA
 # =========================================================

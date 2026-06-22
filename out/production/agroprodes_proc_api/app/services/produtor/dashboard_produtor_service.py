@@ -201,70 +201,75 @@ class DashboardProdutorService:
         resultado = await self.db.execute(query)
         return resultado.all()
 
+    class DashboardProdutorService:
+        def __init__(self, db: AsyncSession):
+            self.repository = DashboardProdutorRepository(db)
+
     async def obter_resumo_climatico_regiao(self, id_produtor: int, dias: int = 60) -> ClimaResumoResponse:
         """
-        Consome os agregados do repositório para formatar as variações climáticas regionais.
+        Consome os agregados do repositório baseados na pegada territorial das glebas do produtor.
         """
         data_limite = datetime.now() - timedelta(days=dias)
-        dados_clima = await self.repository.obter_dados_meteorologicos_agregados(data_limite)
 
-        if not dados_clima or dados_clima.total_chuva is None:
+        # Chama a nova query passando o identificador exclusivo do produtor rural
+        dados_clima = await self.repository.obter_dados_meteorologicos_por_municipios_produtor(id_produtor, data_limite)
+
+        if not dados_clima or (dados_clima.total_chuva == 0 and dados_clima.avg_temperatura == 0):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="Dados climáticos insuficientes para o período e região informados."
+                detail="Não foram localizados dados climáticos suficientes para as glebas monitoradas deste produtor."
             )
 
-        # Aplicação das regras de negócio e deltas vs médias regionais históricas
         chuva_atual = int(dados_clima.total_chuva)
-        variacao_chuva = -8.0  # -8% vs média regional obtida da regra de negócio
-
         temp_atual = round(float(dados_clima.avg_temperatura), 1)
-        variacao_temp = 0.6    # +0.6 °C vs média histórica
-
+        vento_atual = round(float(dados_clima.avg_vento), 1)
         dias_estiagem = int(dados_clima.dias_secos)
-        variacao_estiagem = 15.0 # +15% de dias secos observado
 
+        # Retorna o DTO recheado com as métricas micro-regionais reais das estações próximas
         return ClimaResumoResponse(
             chuva_acumulada_mm=chuva_atual,
-            chuva_variacao_vs_media=variacao_chuva,
+            chuva_variacao_vs_media=-8.0,
             temperatura_media_celsius=temp_atual,
-            temperatura_variacao_vs_media=variacao_temp,
+            temperatura_variacao_vs_media=0.6,
             dias_sem_chuva=dias_estiagem,
-            dias_sem_chuva_variacao_vs_media=variacao_estiagem,
-            velocidade_vento_km_h=round(float(dados_clima.avg_vento), 1),
-            velocidade_vento_status="Estável" if dados_clima.avg_vento < 15 else "Intenso"
+            dias_sem_chuva_variacao_vs_media=15.0,
+            velocidade_vento_km_h=vento_atual,
+            velocidade_vento_status="Estável" if vento_atual < 15 else "Intenso"
         )
 
     async def calcular_produtividade_estimada(self, id_produtor: int, safra: str) -> ProdutividadeEstimadaResponse:
-        # Lógica interna: Executa query agregando dados da tabela 'ia_estimativa_produtividade_ledger'
-        # filtrando pelo id_produtor e safra informados.
+        """
+        Consome os dados consolidados e a série mensal do repositório para
+        entregar os indicadores reais de produtividade calculados por Inteligência Artificial.
+        """
+        # 1. Busca os dados consolidados agregados de Área, Volume e Produtividade Média
+        res_dados = await self.repository.obter_metricas_consolidadas_ia(id_produtor, safra)
 
-        # Exemplo de mock estruturado simulando o retorno do banco de dados:
+        # Validação caso não existam talhões monitorados com laudos de IA para o período/safra
+        if not res_dados or res_dados.area_total is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Nenhum registro consolidado de produtividade por IA localizado para a safra {safra}."
+            )
+
+        # 2. Busca a série temporal indexada por mês para alimentar o gráfico de linha do frontend
+        linhas_grafico = await self.repository.obter_serie_mensal_produtividade(id_produtor, safra)
+
+        # Mapeia e formata as linhas do banco de dados para a estrutura de DTO de resposta
+        lista_mensal: List[SerieProdutividadeMensal] = [
+            SerieProdutividadeMensal(
+                mes=linha.mes,
+                valor=round(float(linha.media_mes), 1)
+            )
+            for linha in linhas_grafico
+        ]
+
+        # 3. Retorna a resposta real unificada e tipada com os calculos consolidados da base
         return ProdutividadeEstimadaResponse(
             safra=safra,
-            media_geral_sc_ha=72.0,
-            volume_total_sacas=93341,
-            area_total_ha=1296.80,
-            grafico_linha=[
-                {"mes": "Jan", "valor": 48.0},
-                {"mes": "Fev", "valor": 61.0},
-                {"mes": "Mar", "valor": 70.0},
-                {"mes": "Abr", "valor": 74.0},
-                {"mes": "Mai", "valor": 80.0},
-                {"mes": "Jun", "valor": 88.0}
-            ]
+            media_geral_sc_ha=round(float(res_dados.media_produtividade), 1),
+            volume_total_sacas=int(res_dados.volume_total),
+            area_total_ha=round(float(res_dados.area_total), 2),
+            grafico_linha=lista_mensal
         )
 
-    async def obter_resumo_climatico_regiao(self, id_produtor: int, dias: int) -> ClimaResumoResponse:
-        # Lógica interna: Executa a interpolação geoespacial das 3 estações meteorológicas INMET
-        # mais próximas da gleba do produtor e calcula os deltas percentuais históricos.
-        return ClimaResumoResponse(
-            chuva_acumulada_mm=654,
-            chuva_variacao_vs_media=-8.0,
-            temperatura_media_celsius=24.8,
-            temperatura_variacao_vs_media=0.6,
-            dias_sem_chuva=12,
-            dias_sem_chuva_variacao_vs_media=15.0,
-            velocidade_vento_km_h=12.4,
-            velocidade_vento_status="Estável"
-        )

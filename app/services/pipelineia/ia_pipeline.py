@@ -1,4 +1,6 @@
 import asyncio
+from datetime import datetime
+
 import numpy as np
 import pandas as pd
 from typing import Dict, Any
@@ -12,7 +14,6 @@ from shapely.wkt import loads
 # Este importa apenas o que realmente existe em geometry
 from shapely.geometry import mapping
 
-
 from app.services.pipelineia.vmg_intelligence_service import VMGIntelligenceService
 from app.models.models_ledger import (
     IaClassificacaoCulturaLedger,
@@ -24,6 +25,7 @@ from app.events.vmg_events import vmg_event_dispatcher, EventoAnaliseConcluida
 
 import logging
 
+#logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 # ==============================================================================
@@ -204,15 +206,7 @@ def processar_ia_modulo(service, ndvi, coordenada_gleba, estacoes, nitrogenio, p
 # ==============================================================================
 class VMGPipeline:
 
-    def __init__(
-            self,
-            compliance_repo,
-            zarc_repo,
-            solo_repo,
-            clima_repo,
-            bpa_repo,
-            ledger_repo,
-            db_session
+    def __init__(self,compliance_repo,zarc_repo,solo_repo,clima_repo,bpa_repo,ledger_repo, db_session
     ):
         self.compliance_repo = compliance_repo
         self.zarc_repo = zarc_repo
@@ -222,8 +216,6 @@ class VMGPipeline:
         self.ledger_repo = ledger_repo
         self.db_session = db_session
         self.service = VMGIntelligenceService()
-
-
 
     async def executar(
             self,
@@ -247,29 +239,55 @@ class VMGPipeline:
 
         gleba = await self.solo_repo.obter_gleba(id_gleba)
 
+        # 1. Recupera as datas base
         data_plantio = pd.to_datetime(
             gleba.get("data_estimada_plantio") or data_analise
         )
+        agora = datetime.now()
+
+        # 2. SE O PLANTIO FOR NO FUTURO: Monitora a janela retroativa dos últimos 30 dias a partir de hoje
+        if data_plantio > agora:
+            logger.warning(f"Plantio programado para o futuro ({data_plantio.date()}). Ajustando busca para a janela retrospectiva atual.")
+            dt_inicio = (agora - pd.DateOffset(days=30)).to_pydatetime()
+            dt_fim = agora
+        else:
+            # SE O PLANTIO JÁ OCORREU: Usa a janela normal (Plantio - 30 dias até a data da análise)
+            limite_inicio = (data_plantio - pd.DateOffset(days=30)).to_pydatetime()
+            limite_fim = data_analise.to_pydatetime()
+
+            # Aplica as travas normais contra o futuro e ordenação
+            dt_inicio = min(limite_inicio, agora)
+            dt_fim = min(limite_fim, agora)
+            if dt_inicio > dt_fim:
+                dt_inicio, dt_fim = dt_fim, dt_inicio
+
+        # 3. Margem de segurança caso o intervalo fique estreito demais (Ex: menos de 5 dias)
+        if (dt_fim - dt_inicio).days < 5:
+            dt_inicio = (dt_fim - pd.DateOffset(days=30)).to_pydatetime()
+
+        logger.info(f"Buscando rasters VMG na janela operacional: {dt_inicio.date()} até {dt_fim.date()}")
 
         rasters = await self.solo_repo.buscar_rasters(
             id_gleba=id_gleba,
-            data_inicio=data_plantio - pd.DateOffset(days=30),
-            data_fim=data_analise,
+            data_inicio=dt_inicio,
+            data_fim=dt_fim,
         )
 
         if not rasters:
+            # Passa objetos datetime nativos e limpos para evitar quebras no pystac_client
             await self.service.sincronizar_rasters_gleba(
                 solo_repo=self.solo_repo,
                 geometria_wkt=gleba["geometria"],
                 id_gleba=id_gleba,
-                data_inicio=data_plantio - pd.DateOffset(days=30),
-                data_fim=data_analise,
+                data_inicio=dt_inicio,
+                data_fim=dt_fim,
             )
             rasters = await self.solo_repo.buscar_rasters(
                 id_gleba=id_gleba,
-                data_inicio=data_plantio - pd.DateOffset(days=30),
-                data_fim=data_analise,
+                data_inicio=dt_inicio,
+                data_fim=dt_fim,
             )
+
         if not rasters:
             raise ValueError(
                 "Nenhum raster encontrado para a gleba no período informado."
@@ -289,19 +307,14 @@ class VMGPipeline:
         nitrogenio = await self.service.obter_nitrogenio_medio(self.solo_repo, id_gleba)
         estacoes = await self.service.buscar_estacoes(self.clima_repo, id_gleba)
 
-        # Chamadas externas ou isoladas que não conflitam com a sessão principal
         hash_anterior = await self.ledger_repo.obter_ultimo_hash_gleba(id_gleba)
-
         bloqueio_ambiental = laudo_ambiental["conflito_socioambiental"]
 
-        # ----------------------------------------------------
         # LÓGICA REESTRUTURADA: Cache Híbrido de NDVI via COG
-        # ----------------------------------------------------
         ndvi_resultados = []
         rasters_para_calcular = []
 
         for r in rasters:
-            # Se já computado previamente no banco, reaproveita o resultado imediatamente
             if r.get("ndvi_mean") is not None and r.get("ndvi_std") is not None:
                 ndvi_resultados.append({
                     "id_raster": r["id_raster"],
@@ -312,7 +325,6 @@ class VMGPipeline:
             else:
                 rasters_para_calcular.append(r)
 
-        # Se houver imagens remota s/ estatísticas salvos, processa via COG Streaming
         if rasters_para_calcular:
             novos_calculos = await loop.run_in_executor(
                 None,
@@ -323,7 +335,6 @@ class VMGPipeline:
 
             ndvi_resultados.extend(novos_calculos)
 
-            # Persiste os novos cálculos para evitar processamentos duplicados no futuro
             for calculo in novos_calculos:
                 await self.solo_repo.atualizar_estatisticas_ndvi(
                     id_raster=calculo["id_raster"],
@@ -331,15 +342,27 @@ class VMGPipeline:
                     ndvi_std=calculo["ndvi_std"]
                 )
 
-        # Ordena a série temporal do NDVI por data para a IA processar corretamente
+        # Ordena a série temporal para a IA processar em ordem cronológica estrita
         ndvi_resultados.sort(key=lambda x: x["data"])
-
         # Execução do módulo de Inteligência Artificial usando a lista final de estatísticas
         clima, cultura, confianca, produtividade = await loop.run_in_executor(
             None,
             processar_ia_modulo,
             self.service, ndvi_resultados, coordenada_gleba, estacoes, nitrogenio, possui_bpa, bloqueio_ambiental
         )
+        payload_ndvi_json = [
+            {"data": str(item["data"]), "ndvi_mean": float(item["ndvi_mean"]), "ndvi_std": float(item["ndvi_std"])}
+            for item in ndvi_resultados
+        ]
+
+        # Se a IA bater com a declaração do produtor, temos um dado de treino perfeito (Ground Truth Confiável)
+        if cultura.upper() == cultura_declarada.upper() and confianca >= 0.75:
+            await self.solo_repo.salvar_dados_para_treinamento(
+                gleba_id=id_gleba,
+                safra=safra,
+                ndvi=payload_ndvi_json,
+                cultura_real=cultura.upper()
+            )
 
         # Montagem do payload base do bloco imutável
         payload = {
@@ -355,7 +378,6 @@ class VMGPipeline:
             "zarc_risco_admissivel": float(zarc_dados.get("risco_admissivel", 100.0))
         }
 
-        # Cálculo criptográfico encadeado usando o encoder robusto
         hash_atual = self.service.gerar_hash(payload, hash_anterior)
 
         laudo_ledger = HistoricoLaudosAmbientaisLedger(
@@ -391,8 +413,8 @@ class VMGPipeline:
             id_gleba=id_gleba,
             id_produtor=id_produtor,
             cultura_declarada=str(cultura_declarada),
-            data_estimada_plantio=data_plantio,
-            data_estimada_colheita=pd.to_datetime(gleba.get("data_estimada_colheita") or data_analise),
+            data_estimada_plantio=data_plantio.to_pydatetime(),
+            data_estimada_colheita=pd.to_datetime(gleba.get("data_estimated_colheita") or data_analise).to_pydatetime(),
             decendio_plantio_zarc=int(decendio_plantio),
             risco_zarc_admissivel=float(zarc_dados.get("risco_admissivel", 100.0)),
             possui_certificado_bpa=bool(possui_bpa),
@@ -401,7 +423,7 @@ class VMGPipeline:
 
         self.db_session.add_all([laudo_ledger, classificacao_ledger, produtividade_ledger, declaracao_ledger])
 
-        # DESACOPLAMENTO CRÍTICO: Disparo de ouvintes de eventos de negócio
+        # Disparo de ouvintes de eventos de negócio
         evento = EventoAnaliseConcluida(
             id_produtor=id_produtor,
             id_gleba=id_gleba,
@@ -418,7 +440,6 @@ class VMGPipeline:
             hash_atual=str(hash_atual)
         )
 
-        # Força a sincronização dos dados no banco sem encerrar a transação
         await self.db_session.flush()
 
         return {

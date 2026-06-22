@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field
 from typing import List
-from app.dto.ClimaResponse import IndicadoresAcumulados, AlertaClimatico
+from app.dto.response.ClimaResponse import IndicadoresAcumulados, AlertaClimatico
 
 class ResumoIA(BaseModel):
     cultura_identificada: str

@@ -280,10 +280,16 @@ class GlebaRepository:
                     # Dados dos Livros-Razão
                     HistoricoLaudosAmbientaisLedger.data_auditoria,
                     HistoricoLaudosAmbientaisLedger.laudo_detalhado_json,
+                    #DADOS CLASSIFICAÇÃO IA
                     IaClassificacaoCulturaLedger.safra.label("safra_ledger"),
+                    IaClassificacaoCulturaLedger.status_conducao.label("status_conducao"),
+                    IaClassificacaoCulturaLedger.cultura_declarada.label("cultura_declarada"),
+                    #DADOS PRODUTIVIDADE IA
                     IaEstimativaProdutividadeLedger.produtividade_ia_sacas_ha,
-                    AtestadosVmgLedger.data_emissao,
-
+                    IaEstimativaProdutividadeLedger.status_compatibilidade,
+                    #DADOS ATESTADO IA
+                    AtestadosVmgLedger.data_emissao.label("data_atestado"),
+                    AtestadosVmgLedger.status_validacao.label("status_validacao"),
                     # Retorno fixo do ZARC se estiver fora da portaria (Sincronizado com o DTO)
                     case(
                         (subquery_validacao_zarc == True, "148, de 02/06/2025"),
@@ -297,7 +303,6 @@ class GlebaRepository:
                         (subquery_validacao_zarc == True, "30%"),
                         else_="30%"
                     ).label("risco_admissivel"),
-
                     # Status Geral de Validação para a legenda
                     case(
                         (HistoricoLaudosAmbientaisLedger.conflito_prodes == True, "Alerta"),
@@ -352,3 +357,11 @@ class GlebaRepository:
         except DBAPIError as db_err:
             logger.error(f"[{trace_id}][DB-CRITICAL] Falha do driver PostgreSQL: {str(db_err.orig)}", exc_info=True)
             raise db_err
+    async def obter_historico_treinamento_gleba(self, repo, id_gleba: int) -> List[Dict[str, Any]]:
+        """
+        Consulta o histórico de safras passadas armazenado na tabela de treinamento
+        para auditoria retroativa (atendendo ao limite de até 60 meses da Portaria).
+        """
+        if hasattr(repo, "obter_historico_safras"):
+            return await repo.obter_historico_safras(id_gleba)
+        return []

@@ -30,16 +30,24 @@ class DomínioRepository:
         clausula_where = f"WHERE {' AND '.join(condicoes)}" if condicoes else ""
 
         query = text("""
-                     SELECT DISTINCT ON (LOWER(z.cultura))
-                         z.id AS id,
-                         UPPER(SUBSTRING(z.cultura FROM 1 FOR 3)) AS codigo, -- Gera um código de 3 letras (Ex: SOJ, ARR)
-                         INITCAP(z.cultura) AS nome,                         -- Capitaliza o nome (Ex: Soja, Arroz, Feijão)
-                         'GRÃOS' AS grupo,                                   -- Classificação padrão de grupo regulatório
-                         TRUE AS ativo,                                      -- Compatibilidade de flag com o DTO anterior
-                         TRUE AS permite_zarc,                               -- Garante conformidade com o ecossistema VMG
-                         z.data_atualizacao AS data_cadastro
-                     FROM agroprods.zarc_zoneamento z
-                     ORDER BY LOWER(z.cultura) ASC, z.id ASC;
+                     WITH culturas_agrupadas AS (
+                         SELECT
+                             MIN(z.id) AS id, -- Pega o menor ID para cada cultura (simula o z.id ASC)
+                             LOWER(z.cultura) AS cultura_lower,
+                             MAX(z.data_atualizacao) AS data_atualizacao -- Ajuste para MIN ou MAX conforme sua regra
+                         FROM agroprods.zarc_zoneamento z
+                         GROUP BY LOWER(z.cultura)
+                     )
+                     SELECT
+                         id,
+                         UPPER(SUBSTRING(cultura_lower FROM 1 FOR 3)) AS codigo,
+                         INITCAP(cultura_lower) AS nome,
+                         'GRÃOS' AS grupo,
+                         TRUE AS ativo,
+                         TRUE AS permite_zarc,
+                         data_atualizacao AS data_cadastro
+                     FROM culturas_agrupadas
+                     ORDER BY cultura_lower ASC;
                      """)
 
 

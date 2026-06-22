@@ -220,57 +220,66 @@ class DashboardProdutorRepository:
 
     async def obter_serie_mensal_produtividade(self, id_produtor: int, safra: str) -> List[Any]:
         """
-        Query de série mensal corrigida: Agrupa pelo mês textual e pelo índice numérico
-        do mês para satisfazer as regras do GROUP BY e do ORDER BY do PostgreSQL.
+        Query de série mensal corrigida: Utiliza 'date_trunc' de forma simétrica no select,
+        group_by e order_by para neutralizar erros de agrupamento do PostgreSQL.
         """
+        # Isola a data truncada por mês. Isso garante compilação síncrona idêntica em todas as cláusulas SQL
+        expressao_mes_tronco = func.date_trunc('month', IaEstimativaProdutividadeLedger.data_calculo)
+
         query = (
             select(
-                func.to_char(IaEstimativaProdutividadeLedger.data_calculo, 'Mon').label("mes"),
+                # Formata o tronco da data para a abreviação do mês (Ex: 'Jan', 'Fev'...)
+                func.to_char(expressao_mes_tronco, 'Mon').label("mes"),
                 func.avg(func.coalesce(func.cast(IaEstimativaProdutividadeLedger.produtividade_ia_sacas_ha, Numeric), 0)).label("media_mes")
             )
-            .join(Gleba, Gleba.id_gleba == IaEstimativaProdutividadeLedger.id_gleba)
-            .join(DeclaracaoGlebaPeriodoLedger, DeclaracaoGlebaPeriodoLedger.id_gleba == Gleba.id_gleba)
+            .join(GlebaModel, GlebaModel.id_gleba == IaEstimativaProdutividadeLedger.id_gleba)
+            .join(DeclaracaoGlebaPeriodoLedger, DeclaracaoGlebaPeriodoLedger.id_gleba == GlebaModel.id_gleba)
             .where(
                 and_(
                     DeclaracaoGlebaPeriodoLedger.id_produtor == id_produtor,
                     IaEstimativaProdutividadeLedger.safra == safra
                 )
             )
-            # CORREÇÃO: Agrupa tanto pela string de exibição quanto pelo número do mês para ordenação
-            .group_by(
-                func.to_char(IaEstimativaProdutividadeLedger.data_calculo, 'Mon'),
-                func.extract('month', IaEstimativaProdutividadeLedger.data_calculo)
-            )
-            # Ordena de forma correta pelo número do mês cronológico (Ex: 1 para Jan, 2 para Fev...)
-            .order_by(
-                func.extract('month', IaEstimativaProdutividadeLedger.data_calculo)
-            )
+            # Agrupa unicamente pela expressão do tronco da data
+            .group_by(expressao_mes_tronco)
+            # Ordena de maneira sequencial e cronológica pelo tronco da data
+            .order_by(expressao_mes_tronco)
         )
 
         resultado = await self.db.execute(query)
         return resultado.all()
 
-    async def obter_dados_meteorologicos_agregados(self, data_limite: datetime) -> Optional[Tuple[Any, Any, Any, Any]]:
+
+    async def obter_dados_meteorologicos_por_municipios_produtor(self, id_produtor: int, data_limite: datetime) -> Optional[Any]:
         """
-        Query meteorológica ultra-segura utilizando SQL textual puro.
-        Elimina 100% dos problemas de compilação de expressões abstratas do ORM.
+        Query meteorológica regionalizada: Filtra as séries climáticas diárias do INMET
+        com base estrita nos códigos IBGE dos municípios onde o produtor possui glebas registradas.
         """
-        # Escrita da consulta agregada em SQL padrão ANSI compatível com o PostgreSQL
         sql_query = text("""
                          SELECT
-                             SUM(COALESCE(s.chuva_mm, 0)) AS total_chuva,
-                             AVG(COALESCE(s.temp_c, 0)) AS avg_temperatura,
-                             AVG(COALESCE(s.vento_velocidade, 0)) AS avg_vento,
+                             COALESCE(SUM(s.chuva_mm), 0) AS total_chuva,
+                             COALESCE(AVG(s.temp_c), 0) AS avg_temperatura,
+                             COALESCE(AVG(s.vento_velocidade), 0) AS avg_vento,
                              COUNT(*) FILTER (WHERE s.chuva_mm = 0) AS dias_secos
                          FROM agroprods.series_climaticas_diarias s
                                   JOIN agroprods.estacoes_inmet e ON e.id = s.id_estacao
                          WHERE s.data >= :data_limite
-                           AND e.status = 'Operante'
+                           AND UPPER(e.status) = 'OPERANTE'
+                           -- Nova regra de negócio: Filtra apenas pelas estações localizadas nos municípios do produtor
+                           AND e.uf IN (
+                             SELECT DISTINCT sigla_uf
+                             FROM agroprods.municipio_ibge
+                             WHERE codigo_municipio IN (
+                                 SELECT codigo_municipio
+                                 FROM agroprods.glebas
+                                 WHERE id_produtor = :id_produtor AND codigo_municipio IS NOT NULL
+                             )
+                         )
                          """)
 
-        # Executa de forma assíncrona injetando o parâmetro de data com segurança contra SQL Injection
-        resultado = await self.db.execute(sql_query, {"data_limite": data_limite})
-        return resultado.first()
-
-        resultado = await self.db.execute(query)
+        # Executa injetando ambos os parâmetros de busca assíncrona com proteção contra SQL Injection
+        resultado = await self.db.execute(
+            sql_query,
+            {"id_produtor": id_produtor, "data_limite": data_limite}
+        )
         return resultado.first()

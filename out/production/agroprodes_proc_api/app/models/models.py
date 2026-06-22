@@ -36,34 +36,6 @@ class Gleba(Base):
     data_criacao: Mapped[datetime] = mapped_column(DateTime, server_default=text("CURRENT_TIMESTAMP"))
 
     produtor: Mapped["Pessoa"] = relationship("Pessoa", back_populates="glebas")
-    classificacoes: Mapped[List["ClassificacaoCultura"]] = relationship("ClassificacaoCultura", back_populates="gleba")
-
-
-class ClassificacaoCultura(Base):
-    __tablename__ = "classificacoes_culturas"
-    __table_args__ = {"schema": "agroprods"}
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    gleba_id: Mapped[int] = mapped_column(Integer, ForeignKey("agroprods.glebas.id_gleba"), nullable=False)
-    safra: Mapped[str] = mapped_column(String(50), nullable=False)
-    data_classificacao: Mapped[datetime] = mapped_column(DateTime, server_default=text("CURRENT_TIMESTAMP"))
-    cultura_predita: Mapped[str] = mapped_column(String(50), nullable=False)
-    cultura_real: Mapped[str] = mapped_column(String(50), nullable=False)
-    confianca_ia: Mapped[float] = mapped_column(Numeric(5, 4), nullable=False)
-
-    # Colunas customizadas acopladas para suporte à IA Real e Regras de Negócio
-    produtividade_sacas_ha: Mapped[float] = mapped_column(Numeric(8, 2), nullable=False)
-    nitrogenio_grid: Mapped[float] = mapped_column(Numeric(10, 4), nullable=False)
-    prodes_conflito: Mapped[bool] = mapped_column(Boolean, nullable=False)
-    bpa_status: Mapped[bool] = mapped_column(Boolean, nullable=False)
-    srid_validado: Mapped[int] = mapped_column(Integer, default=4326)
-
-    # Colunas de Auditoria Criptográfica (Ledger Blockchain)
-    blockchain_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
-    blockchain_anterior: Mapped[str] = mapped_column(String(64), nullable=False)
-
-    gleba: Mapped["Gleba"] = relationship("Gleba", back_populates="classificacoes")
-
 
 class AnaliseProdes(Base):
     __tablename__ = "analise_prodes"

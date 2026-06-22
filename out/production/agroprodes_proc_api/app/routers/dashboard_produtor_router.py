@@ -97,18 +97,14 @@ async def obter_produtividade_estimada_ia(
     return await service.calcular_produtividade_estimada(id_produtor, safra)
 
 
-@router.get("/resumo-climatico", response_model=ClimaResumoResponse, status_code=status.HTTP_200_OK)
-async def obter_resumo_climatico_regiao(
+@router.get("/resumo-climatico", response_model=ClimaResumoResponse)
+async def obter_resumo_clima(
         id_produtor: int,
-        dias: Optional[int] = 60,
+        dias: int = 60,
         db_principal: AsyncSession = Depends(get_async_db)
 ):
-    """
-    Retorna o resumo climatológico dos últimos 60 dias (Precipitação, Temperatura,
-    Estiagem e Vento) calculado por interpolação a partir das estações do INMET próximas.
-    """
     service = DashboardProdutorService(db_principal)
-    return await service.obter_resumo_climatico_regiao(id_produtor, dias)
+    return await service.obter_resumo_climatico_regiao(id_produtor=id_produtor, dias=dias)
 
 @router.get("/analise-ambiental/raster/{id_raster}/download", status_code=status.HTTP_200_OK)
 async def baixar_raster_geotiff_novo(

@@ -234,17 +234,17 @@ class GlebaService:
             )
 
             # 5. Trava contra nulos na estimativa de produtividade (Cards Inferiores)
-            produtividade_media_ia = int(r.produtividade_ia_sacas_ha) if getattr(r, 'produtividade_ia_sacas_ha', None) is not None else 72
+            produtividade_media_ia = int(r.produtividade_ia_sacas_ha) if getattr(r, 'produtividade_ia_sacas_ha', None) is not None else 0
 
             resumo_analises = ResumoAnalisesCard(
                 ambiental_status="Conforme" if r.status_ambiental == "CONCLUIDO" else "Alerta",
                 ambiental_desc="Sem conflitos ambientais ativos no perímetro" if r.status_ambiental == "CONCLUIDO" else "Sobreposição territorial identificada",
-                cultura_ia_status="Condizente" if r.status_cultura_ia == "CONCLUIDO" else "Pendente",
-                cultura_ia_desc=f"{r.cultura_declarada} (92% confiança)" if r.status_cultura_ia == "CONCLUIDO" else "Sensoriamento spectral pendente",
-                produtividade_status="Concluído" if r.status_produtividade == "CONCLUIDO" else "Pendente",
+                cultura_ia_status= r.status_conducao,
+                cultura_ia_desc=r.cultura_declarada,
+                produtividade_status=r.status_compatibilidade,
                 produtividade_desc=f"{produtividade_media_ia} sc/ha Estimativa média",
-                atestado_status="Emitido" if r.status_atestado == "CONCLUIDO" else "Pendente",
-                atestado_desc="Laudo VMG assinado digitalmente" if r.status_atestado == "CONCLUIDO" else "Aguardando homologação final"
+                atestado_status=r.status_validacao,
+                atestado_desc="Laudo VMG assinado digitalmente" if r.status_validacao == "CONCLUIDO" else "Aguardando homologação final"
             )
 
             # 6. Formatação Cronológica com Trava Antifalha

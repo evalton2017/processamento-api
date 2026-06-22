@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from typing import Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.repository.produtor_repository import ProdutorRepository
@@ -11,10 +11,9 @@ logger = logging.getLogger(__name__)
 
 class ProdutorService:
     def __init__(self, db_session: AsyncSession):
-        # 🟢 CORREÇÃO: Inicialização de todos os atributos exigidos pelos métodos da classe
         self.db = db_session
         self.repository = ProdutorRepository(db_session)
-        self.repo = self.repository # Cria um alias 'self.repo' para não quebrar as chamadas existentes
+        self.repo = self.repository
 
     async def obter_dados_dashboard_produtor(self, id_produtor: int, safra: str) -> Dict[str, Any]:
         logger.info(f"Consolidando dados da tela do produtor ID {id_produtor} para a safra {safra}.")
@@ -54,7 +53,7 @@ class ProdutorService:
     async def buscar_detalhes_car(self, numero_car: str) -> Dict[str, Any]:
         try:
             async with self.db.begin():
-                feicoes = await self.repo.obter_feicoes_ambientais_car(numero_car)
+                feicoes = await self.repository.obter_feicoes_ambientais_car(numero_car)
 
                 if not feicoes:
                     raise HTTPException(
@@ -90,7 +89,7 @@ class ProdutorService:
     async def listar_municipios(self) -> List[Dict[str, Any]]:
         try:
             async with self.db.begin():
-                linhas = await self.repo.obter_todos_municipios()
+                linhas = await self.repository.obter_todos_municipios()
 
                 return [
                     {
@@ -110,7 +109,7 @@ class ProdutorService:
     async def identificar_municipio_por_coordenadas(self, lat: float, lon: float) -> Dict[str, Any]:
         try:
             async with self.db.begin():
-                municipio = await self.repo.buscar_municipio_por_coordenadas(lat, lon)
+                municipio = await self.repository.buscar_municipio_por_coordenadas(lat, lon)
 
                 if not municipio:
                     raise HTTPException(
@@ -131,3 +130,5 @@ class ProdutorService:
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Erro ao geocodificar centróide via coordenadas numéricas: {str(e)}"
             )
+
+

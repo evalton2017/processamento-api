@@ -33,26 +33,44 @@ class ValidacaoZarcService:
         else:
             return f"21 a no máximo 31 de {nome_mes}"
 
-    def _calcular_data_por_decendio(self, decendio: int, final: bool = False) -> date:
-        """Converte um número de decêndio (1-36) em uma instância de date aproximada para o ano de 2026"""
-        ano = 2026
+    def _calcular_data_por_decendio(self, decendio: int, ano_base: int, final: bool = False) -> str:
+        """
+        Calcula a data exata de um decêndio (1 a 36) projetada no ano real da safra.
+        """
+        # Cada mês possui exatamente 3 decêndios no ZARC
         mes = ((decendio - 1) // 3) + 1
-        posicao_mes = (decendio - 1) % 3
+        posicao_decendio_no_mes = ((decendio - 1) % 3) + 1
 
-        if not final:
-            dia = 1 if posicao_mes == 0 else (11 if posicao_mes == 1 else 21)
-            return date(ano, mes, dia)
+        # Regra de cruzamento de ano da Safra Brasileira (Ex: Safra 2026/2027):
+        # Os decêndios de 1 a 18 (Janeiro a Junho) acontecem no segundo ano do ciclo (2027)
+        # Os decêndios de 19 a 36 (Julho a Dezembro) acontecem no primeiro ano do ciclo (2026)
+        if decendio <= 18:
+            ano_real = ano_base + 1
         else:
-            if posicao_mes == 0:
-                return date(ano, mes, 10)
-            elif posicao_mes == 1:
-                return date(ano, mes, 20)
+            ano_real = ano_base
+
+        # Define o dia com base na posição do decêndio dentro do mês correspondente
+        if not final:
+            # Data de início do decêndio (Dias 1, 11 ou 21)
+            dia = 1 if posicao_decendio_no_mes == 1 else (11 if posicao_decendio_no_mes == 2 else 21)
+        else:
+            # Data de término do decêndio (Dias 10, 20 ou o último dia do mês corrente)
+            if posicao_decendio_no_mes == 1:
+                dia = 10
+            elif posicao_decendio_no_mes == 2:
+                dia = 20
             else:
-                # Retorna o último dia do mês correspondente
-                proximo_mes = mes + 1 if mes < 12 else 1
-                proximo_ano = ano if mes < 12 else ano + 1
-                ultimo_dia = (datetime(proximo_ano, proximo_mes, 1) - timedelta(days=1)).day
-                return date(ano, mes, ultimo_dia)
+                # Caso seja o terceiro decêndio, calcula o último dia do mês de forma dinâmica
+                if mes == 2:
+                    # Trata ano bissexto para o mês de Fevereiro
+                    is_bissexto = (ano_real % 4 == 0 and ano_real % 100 != 0) or (ano_real % 400 == 0)
+                    dia = 29 if is_bissexto else 28
+                elif mes in (4, 6, 9, 11):
+                    dia = 30
+                else:
+                    dia = 31
+
+        return date(ano_real, mes, dia)
 
     async def validar_planejamento_zarc(self, dados: ValidarZarcRequest) -> dict:
         """
@@ -125,50 +143,61 @@ class ValidacaoZarcService:
             "mensagem": f"Planejamento Agronômico validado com sucesso para a Safra {dados.safra} junto aos parâmetros do ZARC/MAPA."
         }
 
-    async def consultar_janela_geral_zarc(self, municipio_ibge: int, cultura: str) -> dict:
+    async def consultar_janela_geral_zarc(self, municipio_ibge: int, cultura: str, safra: str) -> dict:
         """
         Busca os registros reais do repositório, calcula as datas operacionais
-        e devolve o painel de sugestões montado dinamicamente do banco de dados.
+        baseando-se no ano de vigência da safra informada.
         """
         registros = await self.repository.obter_calendario_zarc_municipio(municipio_ibge, cultura)
 
         if not registros:
             raise HTTPException(
                 status_code=404,
-                detail=f"Zoneamento ZARC não parametrizado ou indisponível para a cultura '{cultura}' nesta região."
+                detail=f"Zoneamento ZARC não parametrizado para a cultura '{cultura}' nesta região."
             )
 
-        # Filtra e agrupa para evitar duplicidade de decêndios se houver múltiplos tipos de solo cadastrados
         decendios_mapeados = {}
         for r in registros:
             d = r.decendio_plantio
             risco = float(r.risco_admissivel)
-            # Mantém apenas o menor risco do decêndio caso haja repetição por tipo de solo
             if d not in decendios_mapeados or risco < decendios_mapeados[d]:
                 decendios_mapeados[d] = risco
 
-        # Ordena as chaves dos decêndios obtidos
         decendios_ordenados = sorted(decendios_mapeados.keys())
 
-        # Monta a lista de sugestões tipada
         sugestoes = [
             {
                 "decendio": d,
                 "periodo_sugerido": self._converter_decendio_para_texto(d),
                 "risco_pct": int(decendios_mapeados[d])
             }
-            for d in decendios_ordenados if decendios_mapeados[d] <= 20.00 # Mantém o filtro de segurança de risco máximo de 20%
+            for d in decendios_ordenados if decendios_mapeados[d] <= 20.00
         ]
 
-        # Calcula dinamicamente os limites de calendário com base no primeiro e último decêndios encontrados
-        data_inicio = self._calcular_data_por_decendio(decendios_ordenados[0], final=False)
-        data_fim = self._calcular_data_por_decendio(decendios_ordenados[-1], final=True)
+        if not sugestoes:
+            raise HTTPException(
+                status_code=400,
+                detail="Nenhuma janela atende ao limite de risco de 20% para esta cultura na região."
+            )
+
+        # 🟢 EXTRAÇÃO DO ANO BASE DA SAFRA (Limpa textos se houver, ex: "Safra 2026/2027" -> 2026)
+        numeros_safra = ''.join(c for c in safra if c.isdigit() or c == '/')
+        ano_base_str = numeros_safra.split('/')[0]
+        ano_base_safra = int(ano_base_str)
+
+        # Filtra os decendios estritamente válidos pelo risco
+        decendios_validos = [s["decendio"] for s in sugestoes]
+
+        # 🟢 CORREÇÃO DAS DATAS: Passando o ano base correto extraído da safra
+        data_inicio = self._calcular_data_por_decendio(decendios_validos[0], ano_base=ano_base_safra, final=False)
+        data_fim = self._calcular_data_por_decendio(decendios_validos[-1], ano_base=ano_base_safra, final=True)
 
         return {
             "cultura": cultura,
             "municipio_ibge": municipio_ibge,
+            "safra_vigente": safra,
             "data_inicio_permitida": data_inicio,
             "data_fim_permitida": data_fim,
             "sugestoes_janelas_plantio": sugestoes,
-            "mensagem_auxiliar": f"Calendário agrícola extraído dinamicamente das portarias oficiais do MAPA para o município {municipio_ibge}."
+            "mensagem_auxiliar": f"Calendário agrícola extraído e projetado para o ciclo da safra {safra}."
         }
