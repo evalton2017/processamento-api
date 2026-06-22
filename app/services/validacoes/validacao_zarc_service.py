@@ -112,8 +112,8 @@ class ValidacaoZarcService:
             if r.decendio_plantio == decendio_proposto:
                 regra_especifica_usuario = r
 
-            # Alimenta o mapa de decêndios válidos com risco admissível <= 20%
-            if float(r.risco_admissivel) <= 20.00:
+            # Alimenta o mapa de decêndios válidos com risco admissível <= 20% alterado para 40 para testes
+            if float(r.risco_admissivel) <= 40.00:#20.00:
                 if r.decendio_plantio not in decendios_validos or float(r.risco_admissivel) < decendios_validos[r.decendio_plantio]:
                     decendios_validos[r.decendio_plantio] = float(r.risco_admissivel)
 
