@@ -160,7 +160,7 @@ class ValidacaoZarcService:
         for r in registros:
             d = r.decendio_plantio
             risco = float(r.risco_admissivel)
-            if d not in decendios_mapeados or risco < decendios_mapeados[d]:
+            if d not in decendios_mapeados or risco <= decendios_mapeados[d]:
                 decendios_mapeados[d] = risco
 
         decendios_ordenados = sorted(decendios_mapeados.keys())
@@ -171,7 +171,7 @@ class ValidacaoZarcService:
                 "periodo_sugerido": self._converter_decendio_para_texto(d),
                 "risco_pct": int(decendios_mapeados[d])
             }
-            for d in decendios_ordenados if decendios_mapeados[d] <= 20.00
+            for d in decendios_ordenados if decendios_mapeados[d] <= 40.00 #20.00
         ]
 
         if not sugestoes:
