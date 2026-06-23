@@ -172,8 +172,6 @@ class SoloRepository:
         Salva os vetores de índices de vegetação estruturados para a base de retreino da IA.
         Garante conformidade técnica com o compilador Core do SQLAlchemy 2.0.
         """
-        # 1. 🟢 CORREÇÃO: Define a estrutura da tabela virtual usando o Core explicitamente
-        # Isso substitui o text() e impede o erro de 'TextClause object' no compilador
         tabela_treino = table(
             "treinamento_culturas",
             column("gleba_id", Integer),

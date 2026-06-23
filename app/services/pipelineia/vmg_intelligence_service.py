@@ -76,48 +76,47 @@ class VMGIntelligenceService:
             valores_media = [item["ndvi_mean"] for item in perfil_ndvi]
             perfil_ndvi = np.array(valores_media, dtype=np.float32)
 
-        if perfil_ndvi.size == 0:
-            return {"cultura": "DESCONHECIDO", "confianca": 0.0, "status": "SEM_DADOS"}
+        # --- CORREÇÃO: Bloqueia arrays vazios ou compostos apenas por zeros ---
+        if perfil_ndvi.size == 0 or np.all(perfil_ndvi == 0.0):
+            logger.error(f"[MÓDULO IA] Falha crítica: Perfil NDVI recebido está completamente zerado ou vazio devido à janela operacional curta.")
+            return {
+                "cultura": "DESCONHECIDO",
+                "confianca": 0.0,
+                "status": "SEM_DADOS"
+            }
 
         ndvi_plano = perfil_ndvi.flatten()
         if len(ndvi_plano) != 60:
-            logger.warning(f"Ajustando dimensionalidade fenológica via interpolação de {len(ndvi_plano)} para 60 posições.")
             ndvi_plano = self._ajustar_escala_temporal_ndvi(ndvi_plano, 60)
 
         X = ndvi_plano.reshape(1, -1)
 
         # --- INFERÊNCIA DA INTELIGÊNCIA ARTIFICIAL ---
-        # 1. Roda a predição para o lote (batch) de dados
         probs_matriz = self.modelo_classificacao.predict_proba(X)
-
-        # 2. Extrai a primeira linha do lote (formato unidimensional)
         probs = probs_matriz[0]
 
-        # 3. Localiza a classe de maior probabilidade e extrai o score de confiança
         idx_interno_xgb = int(np.argmax(probs))
         confianca = float(probs[idx_interno_xgb])
-
-        # --- MAPEAMENTO DINÂMICO DE STRINGS COM CLAUSULA ANTI-RUÍDO ---
-        # Dicionário global unificado do Agroprodes para tradução de fallbacks numéricos
-        culturas_globais = {
-            0: "SOJA", 1: "MILHO", 2: "ALGODAO",
-            3: "PASTAGEM", 4: "CAFE", 5: "ARROZ"
-        }
 
         if hasattr(self, "mapa_reverso_classes") and self.mapa_reverso_classes:
             retorno_pkl = self.mapa_reverso_classes.get(idx_interno_xgb, "DESCONHECIDO")
 
-            # Se o .pkl retornar um número/id (como 0 ou "0"), traduz usando o dicionário estável
+            # Se o pkl guardou IDs numéricos brutos ou texto em formato de dígito, traduz
             if isinstance(retorno_pkl, (int, np.integer)) or str(retorno_pkl).isdigit():
+                culturas_globais = {0: "CAFE", 1: "MILHO", 2: "SOJA"}
                 cultura_identificada = culturas_globais.get(int(retorno_pkl), "DESCONHECIDO")
             else:
-                # Se já for o texto purificado ("SOJA"), mantém a string
+                # Se já for o texto direto ("SOJA", "CAFE"), atribui sem desvios
                 cultura_identificada = str(retorno_pkl)
         else:
-            # Fallback direto caso o artefato pkl não possua metadados de classe
-            cultura_identificada = culturas_globais.get(idx_interno_xgb, "DESCONHECIDO")
+            # Fallback estático APENAS se o .pkl não possuir metadados (fora do if de cima)
+            culturas_globais_fallback = {
+                0: "SOJA", 1: "MILHO", 2: "ALGODAO",
+                3: "PASTAGEM", 4: "CAFE", 5: "ARROZ"
+            }
+            cultura_identificada = culturas_globais_fallback.get(idx_interno_xgb, "DESCONHECIDO")
 
-        # Padroniza a string eliminando espaços em branco e aplicando caixa alta
+        # Padronização universal aplicada para qualquer um dos caminhos acima
         cultura_identificada = cultura_identificada.upper().strip()
 
         # --- CRITÉRIO DE CONFORMIDADE DA PORTARIA SDI/MAPA Nº 739/2025 ---
@@ -129,20 +128,28 @@ class VMGIntelligenceService:
             "status": status
         }
 
-    def calcular_produtividade(
-            self,
-            perfil_ndvi: Any,
-            nitrogenio: float,
-            temperatura: float,
-            chuva: float
-    ) -> float:
+    def calcular_produtividade(self, perfil_ndvi: Any, nitrogenio: float, temperatura: float, chuva: float) -> float:
+        # 🟢 CORREÇÃO 1: Extração e normalização segura de chaves para o cálculo de produtividade
         if isinstance(perfil_ndvi, list):
-            valores_media = [item["ndvi_mean"] for item in perfil_ndvi]
+            valores_media = []
+            for item in perfil_ndvi:
+                if not isinstance(item, dict):
+                    continue
+                # Suporta tanto ndvi1_mean quanto ndvi_mean
+                valor = item.get("ndvi1_mean") if item.get("ndvi1_mean") is not None else item.get("ndvi_mean", 0.0)
+                valores_media.append(float(valor or 0.0))
             perfil_ndvi = np.array(valores_media, dtype=np.float32)
 
+        # 🟢 CORREÇÃO 2: Cláusula de barreira anti-crash para vetores vazios ou zerados
+        if perfil_ndvi is None or perfil_ndvi.size == 0 or np.all(perfil_ndvi == 0.0):
+            logger.warning("[PRODUTIVIDADE] Abortando cálculo matemático: série temporal de NDVI vazia ou inválida.")
+            return 0.0
+
+        # Aplica o flatten de segurança
         ndvi_plano = perfil_ndvi.flatten()
+
+        # Garante o alinhamento de 60 posições (linha 145 original)
         if len(ndvi_plano) != 60:
-            logger.warning(f"Ajustando dimensionalidade do NDVI para produtividade via interpolação.")
             ndvi_plano = self._ajustar_escala_temporal_ndvi(ndvi_plano, 60)
 
         X = np.hstack([
@@ -237,24 +244,31 @@ class VMGIntelligenceService:
             query={"eo:cloud_cover": {"lte": max_nuvem}},
         )
 
-        # Uso correto do gerador para não bloquear o Event Loop do microserviço
         for item in search.item_collection():
             try:
-                raster_url = item.assets["visual"].href if "visual" in item.assets else item.assets["red"].href
-                hash_sha256 = hashlib.sha256(raster_url.encode("utf-8")).hexdigest()
+                # --- CORREÇÃO EXTRAÇÃO DE BANDAS CIENTÍFICAS ---
+                # O NDVI necessita obrigatoriamente da banda NIR (B08) e RED (B04)
+                if "nir" not in item.assets or "red" not in item.assets:
+                    continue
 
-                # Conversão segura do datetime STAC para date do Python
+                nir_url = item.assets["nir"].href
+                red_url = item.assets["red"].href
+
+                # O hash pode continuar sendo gerado a partir do link da banda red
+                hash_sha256 = hashlib.sha256(red_url.encode("utf-8")).hexdigest()
                 data_captura = item.datetime.date() if item.datetime else data_inicio.date()
 
                 yield {
                     "data": data_captura,
-                    "raster_url": raster_url,
+                    "nir_url": nir_url,      # Nova chave necessária para o cálculo real
+                    "raster_url": f"{item.assets['red'].href}|{item.assets['nir'].href}",
                     "hash_sha256": hash_sha256,
                     "cloud_cover": float(item.properties.get("eo:cloud_cover", 0.0)),
                 }
             except Exception:
                 logger.exception("Erro ao processar item do catálogo STAC %s", item.id)
                 continue
+
     async def salvar_dados_para_treinamento(
             self,
             gleba_id: int,

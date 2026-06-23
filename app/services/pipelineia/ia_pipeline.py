@@ -117,16 +117,16 @@ def calcular_ndvi_real(rasters, geometria_wkt: str):
     with gdal_env:
         for r in rasters:
             try:
-                # O item retornado pela busca STAC é o asset 'visual' (RGB)
-                # Para calcular NDVI real, precisamos das bandas Red (B04) e NIR (B08)
-                # Podemos deduzir as URLs das bandas a partir da URL visual ou alterar a sincronização.
-                # Assumindo que mudamos para passar a URL base ou dicionário no raster_url:
-                url_visual = r["raster_url"]
+                url_composta = r["raster_url"]
 
-                # Monta os caminhos para o NIR e RED baseados no padrão do Element84 S3
-                # Exemplo: ..._visual.tif -> ..._B04.tif / ..._B08.tif
-                url_red = url_visual.replace("_visual.tif", "_B04.tif")
-                url_nir = url_visual.replace("_visual.tif", "_B08.tif")
+                # Se a URL contiver o separador, extrai os links científicos corretos
+                if "|" in url_composta:
+                    url_red, url_nir = url_composta.split("|")
+                else:
+                    # Fallback de segurança se o registro for antigo
+                    url_visual = url_composta
+                    url_red = url_visual.replace("visual.tif", "B04.tif")
+                    url_nir = url_visual.replace("visual.tif", "B08.tif")
 
                 # Abre a banda Red para coletar a projeção (CRS)
                 with rasterio.open(url_red) as src_red:
@@ -234,9 +234,6 @@ class VMGPipeline:
         if data_analise < limite_retroativo:
             raise ValueError("Inconformidade com a Portaria: Auditorias limitadas aos últimos 60 meses.")
 
-        base = data_analise - pd.DateOffset(months=3)
-        safra = f"{base.year}/{base.year + 1}"
-
         gleba = await self.solo_repo.obter_gleba(id_gleba)
 
         # 1. Recupera as datas base
@@ -245,27 +242,36 @@ class VMGPipeline:
         )
         agora = datetime.now()
 
-        # 2. SE O PLANTIO FOR NO FUTURO: Monitora a janela retroativa dos últimos 30 dias a partir de hoje
+        # 2. DEFINE A JANELA OPERACIONAL E CORRIGE A SAFRA DINAMICAMENTE
         if data_plantio > agora:
-            logger.warning(f"Plantio programado para o futuro ({data_plantio.date()}). Ajustando busca para a janela retrospectiva atual.")
-            dt_inicio = (agora - pd.DateOffset(days=30)).to_pydatetime()
+            logger.warning(f"Plantio programado para o futuro ({data_plantio.date()}). Ajustando busca para o histórico fenológico (180 dias).")
+
+            # Se o plantio está no futuro, a IA vai avaliar o histórico real que aconteceu nos últimos 180 dias
+            dt_inicio = (agora - pd.DateOffset(days=180)).to_pydatetime()
             dt_fim = agora
+
+            # CORREÇÃO DA SAFRA: Como estamos olhando o passado real (fim de 2025/início de 2026), a safra é a anterior
+            base_historica = agora - pd.DateOffset(months=6)
+            safra = f"{base_historica.year}/{base_historica.year + 1}"  # Fica "2025/2026"
         else:
-            # SE O PLANTIO JÁ OCORREU: Usa a janela normal (Plantio - 30 dias até a data da análise)
+            # SE O PLANTIO JÁ OCORREU: Usa a janela normal do ciclo atual
             limite_inicio = (data_plantio - pd.DateOffset(days=30)).to_pydatetime()
             limite_fim = data_analise.to_pydatetime()
 
-            # Aplica as travas normais contra o futuro e ordenação
             dt_inicio = min(limite_inicio, agora)
             dt_fim = min(limite_fim, agora)
             if dt_inicio > dt_fim:
                 dt_inicio, dt_fim = dt_fim, dt_inicio
 
-        # 3. Margem de segurança caso o intervalo fique estreito demais (Ex: menos de 5 dias)
-        if (dt_fim - dt_inicio).days < 5:
-            dt_inicio = (dt_fim - pd.DateOffset(days=30)).to_pydatetime()
+            # Safra normal baseada no plantio real que já aconteceu
+            base = data_plantio - pd.DateOffset(months=3)
+            safra = f"{base.year}/{base.year + 1}"
 
-        logger.info(f"Buscando rasters VMG na janela operacional: {dt_inicio.date()} até {dt_fim.date()}")
+        # 3. Margem de segurança caso o intervalo fique estreito demais
+        if (dt_fim - dt_inicio).days < 5:
+            dt_inicio = (dt_fim - pd.DateOffset(days=180)).to_pydatetime()
+
+        logger.info(f"Buscando rasters VMG na janela operacional: {dt_inicio.date()} até {dt_fim.date()} para a Safra: {safra}")
 
         rasters = await self.solo_repo.buscar_rasters(
             id_gleba=id_gleba,
