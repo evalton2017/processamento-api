@@ -32,8 +32,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libmd0 \
     && rm -rf /var/lib/apt/lists/*
 
-RUN wget https://github.com \
-    && apt-get update && apt-get install -y --no-install-recommends ./wkhtmltox_0.12.6.1-2.bullseye_amd64.deb \
+RUN wget --progress=dot:giga https://github.com \
+    && dpkg -i wkhtmltox_0.12.6.1-2.bullseye_amd64.deb \
+    || apt-get install -y --no-install-recommends -f \
     && rm wkhtmltox_0.12.6.1-2.bullseye_amd64.deb \
     && rm -rf /var/lib/apt/lists/*
 
