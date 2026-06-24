@@ -1,6 +1,6 @@
 FROM python:3.12-slim
 
-# 1. Instalação das dependências nativas, GIS, OCR e dependências do WebKit
+# 1. Instalação das dependências nativas, GIS, OCR, fontes de texto e dependências do WebKit
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     g++ \
@@ -19,6 +19,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libexpat1 \
     fontconfig \
     fonts-dejavu-core \
+    fonts-liberation \
+    xfonts-75dpi \
     wget \
     ca-certificates \
     libxrender1 \
@@ -32,13 +34,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libmd0 \
     && rm -rf /var/lib/apt/lists/*
 
-RUN wget --progress=dot:giga https://github.com \
-    && dpkg -i wkhtmltox_0.12.6.1-2.bullseye_amd64.deb \
-    || apt-get install -y --no-install-recommends -f \
-    && rm wkhtmltox_0.12.6.1-2.bullseye_amd64.deb \
+# 2. Download e instalação correta da versão estável do wkhtmltox para Debian 12 (Bookworm)
+RUN wget https://github.com/wkhtmltopdf/packaging/releases/download/0.12.6.1-3/wkhtmltox_0.12.6.1-3.bookworm_amd64.deb \
+    && dpkg -i wkhtmltox_0.12.6.1-3.bookworm_amd64.deb || apt-get install -y --no-install-recommends -f \
+    && rm wkhtmltox_0.12.6.1-3.bookworm_amd64.deb \
     && rm -rf /var/lib/apt/lists/*
 
-# 2. Configuração de variáveis de ambiente para compilação nativa e caches
+# 3. Configuração de variáveis de ambiente para compilação nativa e caches
 ENV CPLUS_INCLUDE_PATH=/usr/include/gdal
 ENV C_INCLUDE_PATH=/usr/include/gdal
 ENV GDAL_CONFIG=/usr/bin/gdal-config
@@ -50,10 +52,10 @@ WORKDIR /app
 
 COPY requirements.txt .
 
-# 3. Atualização das ferramentas de pacotes essenciais
+# 4. Atualização das ferramentas de pacotes essenciais
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
-# 4. Instalação segura das dependências Python
+# 5. Instalação segura das dependências Python
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
