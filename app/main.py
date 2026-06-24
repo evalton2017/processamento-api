@@ -11,7 +11,7 @@ from app.database.factory.celery_session import get_session
 from app.repository.dominio_repository import DomínioRepository
 from app.repository.zarc_repository import ZarcRepository
 # Imports originais do ecossistema de rotas e modelos do Agroprodes
-from app.routers import (produtor_router, monitoramento, produtividade_router, ia_router, treinamento_router,
+from app.routers import (produtor_router, monitoramento, produtividade_router, ia_router, treinamento_router,relatorio_router,
                          auditoria_router, dashboard_analista_router, analista_router, dashboard_produtor_router, gleba_router)
 import app.models
 
@@ -90,6 +90,7 @@ app.include_router(dashboard_produtor_router.router)
 app.include_router(analista_router.router)
 app.include_router(produtor_router.router)
 app.include_router(gleba_router.router)
+app.include_router(relatorio_router.router)
 app.include_router(monitoramento.router)
 app.include_router(produtividade_router.router)
 app.include_router(ia_router.router)

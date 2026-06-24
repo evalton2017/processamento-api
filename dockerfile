@@ -1,6 +1,6 @@
 FROM python:3.12-slim
 
-# 1. Instalação das dependências nativas e ferramentas do sistema
+# 1. Instalação das dependências nativas, GIS, OCR e dependências do WebKit
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     g++ \
@@ -17,12 +17,33 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr \
     pkg-config \
     libexpat1 \
+    fontconfig \
+    fonts-dejavu-core \
+    wget \
+    ca-certificates \
+    libxrender1 \
+    libxext6 \
+    libfontconfig1 \
+    libx11-6 \
+    libxcb1 \
+    libxau6 \
+    libxdmcp6 \
+    libbsd0 \
+    libmd0 \
     && rm -rf /var/lib/apt/lists/*
 
-# 2. Configuração de variáveis de ambiente para compilação nativa
+RUN wget https://github.com \
+    && apt-get update && apt-get install -y --no-install-recommends ./wkhtmltox_0.12.6.1-2.bullseye_amd64.deb \
+    && rm wkhtmltox_0.12.6.1-2.bullseye_amd64.deb \
+    && rm -rf /var/lib/apt/lists/*
+
+# 2. Configuração de variáveis de ambiente para compilação nativa e caches
 ENV CPLUS_INCLUDE_PATH=/usr/include/gdal
 ENV C_INCLUDE_PATH=/usr/include/gdal
 ENV GDAL_CONFIG=/usr/bin/gdal-config
+# 🚀 Define uma pasta mutável para o Matplotlib e Contextily guardarem mapas temporários na VPS
+ENV MPLCONFIGDIR=/tmp/matplotlib
+ENV CONTEXTILY_CACHE=/tmp/contextily
 
 WORKDIR /app
 

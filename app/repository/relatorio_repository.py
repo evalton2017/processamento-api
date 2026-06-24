@@ -7,72 +7,94 @@ class RelatorioRepository:
     def __init__(self, db: AsyncSession):
         self.db = db
 
-    async def obter_dados_consolidados_atestado(self, id_atestado: int) -> Optional[dict]:
+    async def obter_dados_atestado_por_gleba(self, id_gleba: int) -> Optional[dict]:
         """
-        Executa uma query agregada trazendo dados das tabelas de auditoria (ledger)
-        e cruzando de forma otimizada com o schema de produçao.
+        Busca os dados consolidados do atestado mais recente de uma gleba específica,
+        cruzando as tabelas transacionais com as tabelas imutáveis do esquema audit.
         """
         query = text("""
                      SELECT
-                         -- Cabeçalho & Gleba
+                         -- Cabeçalho & Gleba (Base Transacional)
+                         g.id_gleba,
                          g.nome_gleba,
-                         d_led.cultura_declarada AS cultura_principal,
-                         ia_led.safra,
+                         g.area_hectares,
+                         g.codigo_car,
+                         ST_AsText(g.geometria) AS coordenadas_raw,
+                         g.data_criacao AS data_cadastro_gleba,
+                         m.nome_municipio || ' / ' || m.sigla_uf AS municipio_uf,
+    
+                         -- Último Atestado Emitido (Ledger)
+                         atl.id_atestado,
                          atl.data_emissao,
                          atl.status_validacao,
-                         g.area_hectares,
-
-                         -- Resumo Conformidade (Ledgers de Auditoria)
-                         laudo_led.conflito_socioambiental,
-                         laudo_led.conflito_prodes,
-                         laudo_led.conflito_ibama_icmbio,
-                         laudo_led.conflito_comunidades,
-                         ia_led.status_conducao,
+                         atl.estimativa_produtividade_sacas,
+                         atl.hash_relatorio,
+    
+                         -- Última Declaração de Período/Safra (Ledger)
+                         d_led.cultura_declarada AS cultura_principal,
                          d_led.possui_certificado_bpa,
                          d_led.decendio_plantio_zarc,
                          d_led.risco_zarc_admissivel,
-
-                         -- Informações da Gleba
-                         m.nome_municipio || ' / ' || m.sigla_uf AS municipio_uf,
-                         g.codigo_car,
-                         g.geometria::text AS coordenadas_raw, -- Tratado posteriormente como centróide
-                         g.data_criacao AS data_cadastro_gleba,
-
-                         -- Produtividade (Transacional vs IA)
+                         d_led.data_estimada_plantio,
+                         d_led.data_estimada_colheita,
+    
+                         -- Última Classificação de Imagem/Safra da IA (Ledger)
+                         ia_led.safra,
+                         ia_led.status_conducao,
+    
+                         -- Último Monitoramento de Produtividade IA (Ledger)
                          ia_prod_led.volume_comercializar_declarado,
                          ia_prod_led.produtividade_ia_sacas_ha,
-                         atl.estimativa_produtividade_sacas,
-
-                         -- Metadados de Autenticidade
-                         atl.id_atestado,
-                         atl.hash_relatorio,
-                         d_led.data_estimada_plantio,
-                         d_led.data_estimada_colheita
-
-                     FROM audit.atestados_vmg_ledger atl
-                              JOIN agroprods.glebas g ON g.id_gleba = atl.id_gleba
+    
+                         -- Última Análise Socioambiental (Ledger)
+                         laudo_led.conflito_socioambiental,
+                         laudo_led.conflito_prodes,
+                         laudo_led.conflito_ibama_icmbio,
+                         laudo_led.conflito_comunidades
+    
+                     FROM agroprods.glebas g
                               LEFT JOIN agroprods.municipio_ibge m ON m.codigo_municipio = g.codigo_municipio
-
-                         -- Cruzamento com as últimas fotos imutáveis de auditoria
-                              LEFT JOIN audit.declaracao_gleba_periodo_ledger d_led
-                                        ON d_led.id_gleba = g.id_gleba
-                     ORDER BY d_led.data_registro DESC LIMIT 1
-                
-            LEFT JOIN audit.ia_classificacao_cultura_ledger ia_led
-                     ON ia_led.id_gleba = g.id_gleba
-                     ORDER BY ia_led.data_analise DESC LIMIT 1
-
-                         LEFT JOIN audit.historico_laudos_ambientais_ledger laudo_led
-                     ON laudo_led.id_gleba = g.id_gleba
-                     ORDER BY laudo_led.data_auditoria DESC LIMIT 1
-
-                         LEFT JOIN audit.ia_estimativa_produtividade_ledger ia_prod_led
-                     ON ia_prod_led.id_gleba = g.id_gleba
-                     ORDER BY ia_prod_led.data_calculo DESC LIMIT 1
-
-                     WHERE atl.id_atestado = :id_atestado
+    
+                         -- Busca o atestado emitido mais recente para esta gleba
+                              LEFT JOIN (
+                         SELECT DISTINCT ON (id_gleba) *
+                         FROM audit.atestados_vmg_ledger
+                         WHERE id_gleba = :id_gleba
+                         ORDER BY id_gleba, data_emissao DESC
+                     ) atl ON atl.id_gleba = g.id_gleba
+    
+                         -- Subqueries otimizadas para trazer a última linha de cada ledger da gleba
+                              LEFT JOIN (
+                         SELECT DISTINCT ON (id_gleba) *
+                         FROM audit.declaracao_gleba_periodo_ledger
+                         WHERE id_gleba = :id_gleba
+                         ORDER BY id_gleba, data_registro DESC
+                     ) d_led ON d_led.id_gleba = g.id_gleba
+    
+                              LEFT JOIN (
+                         SELECT DISTINCT ON (id_gleba) *
+                         FROM audit.ia_classificacao_cultura_ledger
+                         WHERE id_gleba = :id_gleba
+                         ORDER BY id_gleba, data_analise DESC
+                     ) ia_led ON ia_led.id_gleba = g.id_gleba
+    
+                              LEFT JOIN (
+                         SELECT DISTINCT ON (id_gleba) *
+                         FROM audit.historico_laudos_ambientais_ledger
+                         WHERE id_gleba = :id_gleba
+                         ORDER BY id_gleba, data_auditoria DESC
+                     ) laudo_led ON laudo_led.id_gleba = g.id_gleba
+    
+                              LEFT JOIN (
+                         SELECT DISTINCT ON (id_gleba) *
+                         FROM audit.ia_estimativa_produtividade_ledger
+                         WHERE id_gleba = :id_gleba
+                         ORDER BY id_gleba, data_calculo DESC
+                     ) ia_prod_led ON ia_prod_led.id_gleba = g.id_gleba
+    
+                     WHERE g.id_gleba = :id_gleba
                      """)
 
-        result = await self.db.execute(query, {"id_atestado": id_atestado})
+        result = await self.db.execute(query, {"id_gleba": id_gleba})
         row = result.mappings().first()
-        return dict(row) if row else None
+        return dict(row) if row and row.get("id_gleba") is not None else None
