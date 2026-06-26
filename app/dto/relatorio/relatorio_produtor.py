@@ -42,7 +42,7 @@ class DadosAtestadoDTO(BaseModel):
     orgao_emissor: str
     metodo_validacao: str
     validade_inicio: datetime
-    validade_fim: datetime
+    validade_fim: str
     hash_documento_blockchain: str
 
 class AtestadoDetalhadoResponse(BaseModel):

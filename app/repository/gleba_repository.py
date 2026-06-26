@@ -254,7 +254,7 @@ class GlebaRepository:
                     and_(
                         ZarcZoneamento.municipio_ibge == GlebaModel.codigo_municipio,
                         func.upper(ZarcZoneamento.cultura) == func.upper(DeclaracaoGlebaPeriodoLedger.cultura_declarada),
-                        ZarcZoneamento.decendio_plantio == DeclaracaoGlebaPeriodoLedger.decendio_plantio_zarc,
+                        ZarcZoneamento.decendio_plantio == DeclaracaoGlebaPeriodoLedger.risco_zarc_admissivel,
                         ZarcZoneamento.safra == cast(
                             func.split_part(IaClassificacaoCulturaLedger.safra, '/', 1),
                             String

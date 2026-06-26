@@ -158,34 +158,72 @@
 
 <!-- SEÇÃO 2: RESUMO DE CONFORMIDADE -->
 <div class="secao-box">
-    <h4 class="vmg-secao-titulo">Resumo de Conformidade</h4>
+    <h4 class="vmg-secao-titulo" style="font-size: 11pt; font-weight: bold; margin: 0 0 12px 0;">Resumo de Conformidade</h4>
     <table class="table-conformidade">
         <tr>
+
+            <!-- 1. MÓDULO AMBIENTAL -->
             <td>
                 <span class="conf-lbl">Ambiental</span>
-                <div class="conf-status">✓ Conforme</div>
+                {% if dados.conformidade.ambiental_conforme != 'DIVERGENTE' %}
+                <div class="conf-status" style="color: #16a34a;">✓ Conforme</div>
                 <span class="conf-sub">Validações ambientais aprovadas</span>
+                {% else %}
+                <div class="conf-status" style="color: #dc2626;">✗ Divergente</div>
+                <span class="conf-sub" style="color: #991b1b;">Sobreposição ou embargo detectado nas bases de auditoria</span>
+                {% endif %}
             </td>
+
+            <!-- 2. MÓDULO AGRÍCOLA -->
             <td>
                 <span class="conf-lbl">Agrícola</span>
-                <div class="conf-status">✓ Conforme</div>
-                <span class="conf-sub">Cultura e janela de plantio de acordo com o ZARC</span>
+                {% if dados.conformidade.ambiental_conforme != 'Reprovado' %}
+                <div class="conf-status" style="color: #16a34a;">✓ Conforme</div>
+                <span class="conf-sub">Cultura identificada via IA em total conformidade</span>
+                {% else %}
+                <div class="conf-status" style="color: #dc2626;">✗ Divergente</div>
+                <span class="conf-sub" style="color: #991b1b;">Incoerência de cultivo identificada por sensoriamento remoto</span>
+                {% endif %}
             </td>
+
+            <!-- 3. MÓDULO BOAS PRÁTICAS (BPA) -->
             <td>
                 <span class="conf-lbl">Boas Práticas</span>
-                <div class="conf-status">✓ Conforme</div>
-                <span class="conf-sub">Certificado de BPA válido</span>
+                {% if dados.conformidade.boas_praticas_conforme != 'Pendente' %}
+                <div class="conf-status" style="color: #16a34a;">✓ Conforme</div>
+                <span class="conf-sub">Certificado de BPA homologado e ativo</span>
+                {% else %}
+                <div class="conf-status" style="color: #ea580c;">! Pendente</div>
+                <span class="conf-sub">Declaração de Boas Práticas Agrícolas aguardando envio</span>
+                {% endif %}
             </td>
+
+            <!-- 4. MÓDULO ZARC -->
             <td>
                 <span class="conf-lbl">ZARC</span>
-                <div class="conf-status">✓ Conforme</div>
-                <span class="conf-sub">Risco admissível: 20%<br>Decêndio: 16</span>
+                {% if dados.conformidade.zarc_conforme == 'Aprovado' %}
+                <div class="conf-status" style="color: #16a34a;">✓ Conforme</div>
+                <span class="conf-sub">Risco agroclimático admissível dentro do limite MAPA</span>
+                {% else %}
+                <div class="conf-status" style="color: #dc2626;">✗ Fora da Janela</div>
+                <span class="conf-sub" style="color: #991b1b;">Plantio realizado fora do calendário recomendado para a região</span>
+                {% endif %}
             </td>
+
+            <!-- 5. MÓDULO PRODUTIVIDADE -->
             <td>
                 <span class="conf-lbl">Produtividade</span>
-                <div class="conf-status">✓ Conforme</div>
-                <span class="conf-sub">{{ dados.conformidade.produtividade_estimada_sacas }} sc/ha estimado<br>{{ dados.conformidade.produtividade_declarada_sacas }} sc/ha declarado</span>
+                {% if dados.conformidade.produtividade_conforme  %}
+                <div class="conf-status" style="color: #16a34a;">✓ Conforme</div>
+                {% else %}
+                <div class="conf-status" style="color: #ea580c;">! Divergente</div>
+                {% endif %}
+                <span class="conf-sub">
+                        {{ dados.conformidade.produtividade_estimada_sacas }} sc/ha estimado<br>
+                        {{ dados.conformidade.produtividade_declarada_sacas }} sc/ha declarado
+                    </span>
             </td>
+
         </tr>
     </table>
 </div>
@@ -252,7 +290,7 @@
 <!-- SEÇÃO 4: LINHA DO TEMPO & PRODUTIVIDADE (DUAS COLUNAS LADO A LADO) -->
 <table class="table-layout">
     <tr>
-        <!-- Coluna Esquerda: Linha do Tempo -->
+        <!-- Coluna Esquerda: Linha do Tempo Totalmente Dinâmica -->
         <td width="48%">
             <div class="secao-box" style="min-height: 165px;">
                 <h4 class="vmg-secao-titulo">Linha do Tempo da Safra</h4>
@@ -260,35 +298,33 @@
                     <div class="timeline-line"></div>
                     <table class="timeline-table">
                         <tr>
-                            <td class="timeline-node">
+                            <!-- 🔄 LOOP JINJA2: Varre o array de eventos e calcula a largura de cada nó -->
+                            {% if dados.linha_tempo_safra %}
+                            {% set total_eventos = dados.linha_tempo_safra|length %}
+                            {% set largura_coluna = (100 / total_eventos)|int %}
+
+                            {% for evento in dados.linha_tempo_safra %}
+                            <td class="timeline-node" width="{{ largura_coluna }}%">
                                 <div class="node-dot"></div>
-                                <div class="node-fase">Plantio</div>
-                                <div class="node-data">10/09/2024</div>
+                                <div class="node-fase">{{ evento.fase }}</div>
+                                <div class="node-data">{{ evento.data_evento }}</div>
                             </td>
-                            <td class="timeline-node">
-                                <div class="node-dot"></div>
-                                <div class="node-fase">Desenv.</div>
-                                <div class="node-data">15/11/2024</div>
+                            {% endfor %}
+                            {% else %}
+                            <!-- Fallback visual caso ocorra ausência crítica de eventos -->
+                            <td style="text-align: center; color: #94a3b8; padding-top: 15px; font-size: 9pt;">
+                                Cronograma de eventos da safra indisponível.
                             </td>
-                            <td class="timeline-node">
-                                <div class="node-dot"></div>
-                                <div class="node-fase">Floração</div>
-                                <div class="node-data">20/12/2024</div>
-                            </td>
-                            <td class="timeline-node">
-                                <div class="node-dot"></div>
-                                <div class="node-fase">Colheita</div>
-                                <div class="node-data">28/02/2025</div>
-                            </td>
+                            {% endif %}
                         </tr>
                     </table>
                 </div>
             </div>
         </td>
 
-        <td class="col-gap"></td> <!-- Espaçador estável entre as colunas -->
+        <td style="width: 3%;"></td> <!-- Espaçador horizontal estável entre as colunas -->
 
-        <!-- Coluna Direita: Gráfico de Rosquinha Vetorial -->
+        <!-- Coluna Reativa Direita: Gráfico de Rosquinha Vetorial (Mantido) -->
         <td width="49%">
             <div class="secao-box" style="min-height: 165px;">
                 <h4 class="vmg-secao-titulo">Produtividade</h4>

@@ -304,8 +304,17 @@ class VMGPipeline:
         centroide = poligono.centroid
         coordenada_gleba = [[float(centroide.x), float(centroide.y)]]
 
-        # Cálculo do decêndio ZARC (1 a 36)
-        decendio_plantio = ((data_plantio.month - 1) * 3) + min(3, (data_plantio.day - 1) // 10 + 1)
+        # 1. Determina o decêndio interno do mês corrente (Regra rígida MAPA)
+        if data_plantio.day <= 10:
+            decendio_mes = 1
+        elif data_plantio.day <= 20:
+            decendio_mes = 2
+        else:
+            # Engloba do dia 21 até o fim do mês (seja dia 28, 29, 30 ou 31)
+            decendio_mes = 3
+
+        # 2. Calcula o decêndio absoluto do ano (Cada mês anterior completo soma 3 decêndios)
+        decendio_plantio = ((data_plantio.month - 1) * 3) + decendio_mes
 
         laudo_ambiental = await self.compliance_repo.verificar_restricoes_portaria(id_gleba, raio_metros=500.0)
         possui_bpa = await self.service.validar_bpa(self.bpa_repo, id_produtor)
@@ -422,7 +431,7 @@ class VMGPipeline:
             data_estimada_plantio=data_plantio.to_pydatetime(),
             data_estimada_colheita=pd.to_datetime(gleba.get("data_estimated_colheita") or data_analise).to_pydatetime(),
             decendio_plantio_zarc=int(decendio_plantio),
-            risco_zarc_admissivel=float(zarc_dados.get("risco_admissivel", 100.0)),
+            risco_zarc_admissivel=float(zarc_dados.get("risco_admissivel", 40.0)),
             possui_certificado_bpa=bool(possui_bpa),
             hash_bloco=str(hash_atual)
         )

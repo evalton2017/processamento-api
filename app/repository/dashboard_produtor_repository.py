@@ -71,28 +71,89 @@ class DashboardProdutorRepository:
         Extrai o JSON detalhado e os booleanos estruturados pelo pipeline de IA.
         """
         sql = text("""
+
                    WITH ultimos_atestados AS (
                        SELECT id_gleba, hash_relatorio,
                               ROW_NUMBER() OVER(PARTITION BY id_gleba ORDER BY data_emissao DESC, id_atestado DESC) as rn
                        FROM audit.atestados_vmg_ledger
-                   )
+                   ),
+                        dados_base AS (
+                            SELECT
+                                g.area_hectares,
+                                hl.conflito_socioambiental,
+                                hl.conflito_prodes,
+                                hl.conflito_ibama_icmbio,
+                                hl.conflito_comunidades,
+                                hl.laudo_detalhado_json,
+                                cl.safra,
+                                dp.decendio_plantio_zarc,
+                                dp.risco_zarc_admissivel,
+                                hl.data_auditoria,
+
+                                EXISTS (
+                                    SELECT 1
+                                    FROM agroprods.zarc_zoneamento AS zz
+                                    WHERE zz.municipio_ibge::VARCHAR = g.codigo_municipio::VARCHAR
+                                        AND UPPER(zz.cultura) = UPPER(cl.cultura_identificada)
+                                        AND zz.decendio_plantio::INT = dp.decendio_plantio_zarc::INT
+                                        AND zz.safra::VARCHAR = SPLIT_PART(cl.safra, '/', 1)::VARCHAR
+                                ) AS informacao_zarc
+                            FROM agroprods.glebas g
+                                     JOIN ultimos_atestados am ON g.id_gleba = am.id_gleba AND am.rn = 1
+                                     JOIN audit.historico_laudos_ambientais_ledger hl ON g.id_gleba = hl.id_gleba AND am.hash_relatorio = hl.hash_bloco
+                                     JOIN audit.ia_classificacao_cultura_ledger cl ON g.id_gleba = cl.id_gleba AND am.hash_relatorio = cl.hash_bloco
+                                     JOIN audit.declaracao_gleba_periodo_ledger dp ON g.id_gleba = dp.id_gleba AND am.hash_relatorio = dp.hash_bloco
+                            WHERE g.id_produtor = :id_produtor AND cl.safra = :safra
+                        ),
+                        regras_mapeadas AS (
+                            SELECT
+                                db.safra,
+                                c.nome,
+                                c.conflito,
+                                p.pct_padrao AS pct,
+                                p.redutor_padrao AS redutor
+                            FROM dados_base db
+                                     CROSS JOIN LATERAL (
+                                VALUES
+                                    ('APP', db.conflito_socioambiental::BOOLEAN),
+                                    ('Reserva Legal', db.conflito_socioambiental::BOOLEAN),
+                                    ('Vegetação Nativa', db.conflito_socioambiental::BOOLEAN),
+                                    ('PRODES', db.conflito_prodes::BOOLEAN),
+                                    ('Embargo IBAMA', db.conflito_ibama_icmbio::BOOLEAN),
+                                    ('Embargo ICMBio', db.conflito_ibama_icmbio::BOOLEAN),
+                                    ('Unidades de Conservação', db.conflito_socioambiental::BOOLEAN),
+                                    ('Terras Indígenas', db.conflito_comunidades::BOOLEAN),
+                                    ('Quilombolas', db.conflito_comunidades::BOOLEAN),
+                                    ('ZARC', CASE WHEN CAST(db.risco_zarc_admissivel AS NUMERIC) > 40.0 THEN true ELSE false END)
+                                    ) AS c(nome, conflito)
+                                     LEFT JOIN agroprods.parametros_conformidade p
+                                               ON p.criterio_nome = c.nome
+                                                   AND p.safra::VARCHAR = db.safra::VARCHAR
+                       )
                    SELECT
-                       g.area_hectares,
-                       hl.conflito_socioambiental,
-                       hl.conflito_prodes,
-                       hl.conflito_ibama_icmbio,
-                       hl.conflito_comunidades,
-                       hl.laudo_detalhado_json,
-                       cl.safra,
-                       dp.decendio_plantio_zarc,
-                       dp.risco_zarc_admissivel
-                   FROM agroprods.glebas g
-                            JOIN ultimos_atestados am ON g.id_gleba = am.id_gleba AND am.rn = 1
-                            JOIN audit.historico_laudos_ambientais_ledger hl ON g.id_gleba = hl.id_gleba AND am.hash_relatorio = hl.hash_bloco
-                            JOIN audit.ia_classificacao_cultura_ledger cl ON g.id_gleba = cl.id_gleba AND am.hash_relatorio = cl.hash_bloco
-                            JOIN audit.declaracao_gleba_periodo_ledger dp ON g.id_gleba = dp.id_gleba AND am.hash_relatorio = dp.hash_bloco
-                   WHERE g.id_produtor = :id_produtor AND cl.safra = :safra
-                   ORDER BY hl.data_auditoria DESC
+                       db.area_hectares,
+                       db.conflito_socioambiental,
+                       db.conflito_prodes,
+                       db.conflito_ibama_icmbio,
+                       db.conflito_comunidades,
+                       db.laudo_detalhado_json,
+                       db.safra,
+                       db.decendio_plantio_zarc,
+                       db.risco_zarc_admissivel,
+                       db.informacao_zarc,
+
+                       -- RETORNO FORMATADO E COMPATÍVEL COM SEU DICIONÁRIO PYTHON
+                       (
+                           SELECT json_agg(json_build_object(
+                                   'nome', rm.nome,
+                                   'conflito', rm.conflito,
+                                   'pct', rm.pct,
+                                   'redutor', rm.redutor
+                                           ))
+                           FROM regras_mapeadas rm
+                       ) AS criterios_mapeados
+                   FROM dados_base db
+                   ORDER BY db.data_auditoria DESC
                        LIMIT 1;
                    """)
 

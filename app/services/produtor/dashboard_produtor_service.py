@@ -1,3 +1,4 @@
+import json
 import logging
 from datetime import datetime, timedelta
 from typing import Dict, Any, List
@@ -51,8 +52,9 @@ class DashboardProdutorService:
         }
 
     async def obter_tabela_conformidade_ambiental(self, id_produtor: int, safra: str) -> Dict[str, Any]:
-        logger.info(f"Processando matriz de conformidade ambiental para o produtor {id_produtor}.")
+        logger.info(f"Processando matriz de conformidade ambiental para o produtor {id_produtor} na safra {safra}.")
 
+        # 💡 O repositório agora executa a nova query passando id_produtor e safra como parâmetros dinâmicos
         laudo = await self.repository.obter_ultimo_laudo_detalhado(id_produtor, safra)
 
         if not laudo:
@@ -60,41 +62,37 @@ class DashboardProdutorService:
             return {"id_gleba": 0, "criterios": [], "conformidade_geral_pct": 100}
 
         area_base = float(laudo["area_hectares"])
-        json_detalhes = laudo["laudo_detalhado_json"] or {}
 
-        # 💡 Extração dinâmica de áreas e percentuais mapeados do laudo do Ledger
-        # Cruzando com o modelo visual do protótipo enviado
-        criterios_mapeados = [
-            {"nome": "APP", "conflito": laudo["conflito_socioambiental"], "pct": 89, "redutor": 0.89},
-            {"nome": "Reserva Legal", "conflito": laudo["conflito_socioambiental"], "pct": 87, "redutor": 0.87},
-            {"nome": "Vegetação Nativa", "conflito": laudo["conflito_socioambiental"], "pct": 84, "redutor": 0.84},
-            {"nome": "PRODES", "conflito": laudo["conflito_prodes"], "pct": 100, "redutor": 1.0},
-            {"nome": "Embargo IBAMA", "conflito": laudo["conflito_ibama_icmbio"], "pct": 100, "redutor": 1.0},
-            {"nome": "Embargo ICMBio", "conflito": laudo["conflito_ibama_icmbio"], "pct": 100, "redutor": 1.0},
-            {"nome": "Unidades de Conservação", "conflito": laudo["conflito_socioambiental"], "pct": 100, "redutor": 1.0},
-            {"nome": "Terras Indígenas", "conflito": laudo["conflito_comunidades"], "pct": 100, "redutor": 1.0},
-            {"nome": "Quilombolas", "conflito": laudo["conflito_comunidades"], "pct": 100, "redutor": 1.0},
-            {"nome": "ZARC", "conflito": float(laudo["risco_zarc_admissivel"]) > 40.0, "pct": 93, "redutor": 0.935}
-        ]
+        # 💡 Recupera a lista de critérios calculada e parametrizada direto do banco de dados (PostgreSQL JSON)
+        # Se o driver do banco já retornar como dicionário Python, não precisa do json.loads
+        criterios_banco = laudo.get("criterios_mapeados")
+        if isinstance(criterios_banco, str):
+            criterios_mapeados = json.loads(criterios_banco)
+        else:
+            criterios_mapeados = criterios_banco or []
 
         linhas_tabela = []
         soma_percentuais = 0
 
         for crit in criterios_mapeados:
             status_linha = "Não Conforme" if crit["conflito"] else "Conforme"
-            area_calculada = round(area_base * crit["redutor"], 2)
 
-            soma_percentuais += crit["pct"]
+            # Converte para float garantindo precisão caso venha como Decimal do banco
+            redutor_valor = float(crit["redutor"])
+            pct_valor = float(crit["pct"])
+
+            area_calculada = round(area_base * redutor_valor, 2)
+            soma_percentuais += pct_valor
 
             linhas_tabela.append({
                 "criterio": crit["nome"],
                 "status": status_linha,
                 "area_ha": area_calculada,
-                "percentual": crit["pct"]
+                "percentual": pct_valor
             })
 
-        # Cálculo da Média de Conformidade Geral do Painel (96% conforme imagem)
-        conformidade_geral = int(soma_percentuais / len(criterios_mapeados))
+        # Cálculo da Média de Conformidade Geral do Painel baseada nos parâmetros da Safra vigente
+        conformidade_geral = int(soma_percentuais / len(criterios_mapeados)) if criterios_mapeados else 100
 
         return {
             "id_gleba": int(laudo.get("id_gleba", 0)),

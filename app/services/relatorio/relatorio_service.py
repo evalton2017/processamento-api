@@ -10,7 +10,7 @@ import pdfkit
 from jinja2 import Environment, FileSystemLoader
 
 import base64
-from shapely.wkt import loads as load_wkt
+from shapely.wkt import loads as load_wkt, loads
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -43,8 +43,30 @@ class RelatorioService:
                 raw_data.get("conflito_comunidades")
             ])
 
+            poligono = loads(raw_data.get("coordenadas_raw"))
+            centroide = str(poligono.centroid)
+
             conforme_agricola = raw_data.get("status_conducao") == "CONDIZENTE"
-            centroide_mock = "12°32'45,12\" S  55°42'10,45\" W"
+
+            prod_declarada = float(raw_data.get("volume_comercializar_declarado") or 20.00)
+            prod_estimada_ia = float(raw_data.get("produtividade_ia_sacas_ha") or raw_data.get("estimativa_produtividade_sacas") or 56.11)
+            ref_regional = float(raw_data.get("referencia_regional_sacas_ha") or 76.00)
+
+            # 2. Define a regra de negócio: Margem de tolerância admissível (ex: 20%)
+            margem_tolerancia = 0.20
+            diferenca_absoluta = abs(prod_declarada - prod_estimada_ia)
+
+            # A produtividade estará CONFORME se a divergência entre o declarado e a IA
+            # for menor ou igual à tolerância estipulada sobre a estimativa.
+            if diferenca_absoluta <= (prod_estimada_ia * margem_tolerancia):
+                produtividade_conforme_dinamica = True
+            else:
+                # Caso o produtor declare algo absurdamente fora do predito pela IA, vira divergente
+                produtividade_conforme_dinamica = False
+            # Validação extra de segurança: Se o declarado for maior que a referência histórica da região, bloqueia
+            if prod_declarada > (ref_regional * 1.10):
+                produtividade_conforme_dinamica = False
+
 
             return AtestadoDetalhadoResponse(
                 cabecalho={
@@ -60,16 +82,16 @@ class RelatorioService:
                     "ambiental_conforme": conforme_ambiental,
                     "agricola_conforme": conforme_agricola,
                     "boas_praticas_conforme": bool(raw_data.get("possui_certificado_bpa")),
-                    "zarc_conforme": float(raw_data.get("risco_zarc_admissivel") or 0) <= 20.0 if raw_data.get("risco_zarc_admissivel") else False,
-                    "produtividade_conforme": True,
+                    "zarc_conforme": raw_data.get("validacao_zarc") == 'Aprovado',
+                    "produtividade_conforme": produtividade_conforme_dinamica,
                     "produtividade_estimada_sacas": float(raw_data.get("produtividade_ia_sacas_ha") or 0.0),
                     "produtividade_declarada_sacas": float(raw_data.get("volume_comercializar_declarado") or 0.0)
                 },
                 informacoes_gerais={
                     "municipio_uf": raw_data.get("municipio_uf") or "Não Informado",
                     "codigo_car": raw_data.get("codigo_car") or "Não Informado",
-                    "coordenadas_centroide": centroide_mock,
-                    "data_cadastro": raw_data.get("data_cadastro_gleba")
+                    "coordenadas_centroide": centroide,
+                    "data_cadastro": raw_data.get("data_criacao")
                 },
                 linha_tempo_safra=[
                     {"fase": "Plantio", "data_evento": raw_data.get("data_estimada_plantio"), "tipo": "Estimado"} if raw_data.get("data_estimada_plantio") else {"fase": "Plantio", "data_evento": None, "tipo": "Pendente"},
@@ -85,7 +107,7 @@ class RelatorioService:
                     "orgao_emissor": "Secretaria de Inovação, Desenvolvimento Sustentável, Irrigação e Cooperativismo",
                     "metodo_validacao": "VMG - Portaria SDI/MAPA nº 739/2025",
                     "validade_inicio": raw_data.get("data_emissao"),
-                    "validade_fim": raw_data.get("data_emissao") + timedelta(days=365) if raw_data.get("data_emissao") else None,
+                    "validade_fim": raw_data.get("dt_fim"),
                     "hash_documento_blockchain": raw_data.get("hash_relatorio")
                 }
             )
@@ -206,6 +228,10 @@ class RelatorioService:
         else:
             dados_payload = raw_data
 
+
+        poligono = loads(raw_data.get("coordenadas_raw"))
+        centroide = poligono.centroid
+
         # 2. Resolução estrita do caminho absoluto da pasta de templates (Mesmo nível do service)
         path_templates = os.path.abspath(os.path.join(os.path.dirname(__file__), "templates"))
 
@@ -220,29 +246,46 @@ class RelatorioService:
             except Exception as e:
                 print(f"Erro ao converter logo.png para Base64: {str(e)}")
 
-        # Mappers e formatadores locais pt-BR
-        def formatar_data_br(data_raw) -> str:
-            if not data_raw: return "Não Informada"
-            try:
-                data_limpa = str(data_raw)[:10]
-                if '-' in data_limpa:
-                    ano, mes, dia = data_limpa.split('-')
-                    return f"{dia}/{mes}/{ano}"
-                return data_limpa
-            except Exception: return str(data_raw)
-
         def formatar_numero_br(valor_raw) -> str:
             if valor_raw is None: return "0,00"
             try:
                 return f"{float(valor_raw):,.2f}".replace(",", "v").replace(".", ",").replace("v", ".")
             except Exception: return str(valor_raw)
 
-        # 🚀 EXTRAÇÃO DA GEOMETRIA REAL (PostGIS WKT) E STATUS REGULATÓRIO
         wkt_real = dados_payload.get("coordenadas_raw") or  ""
         status_atual = dados_payload.get("status_atestado") or dados_payload.get("status_validacao") or "APROVADO"
 
+        prod_declarada = float(dados_payload.get("volume_comercializar_declarado") or 20.00)
+        prod_estimada_ia = float(dados_payload.get("produtividade_ia_sacas_ha") or dados_payload.get("estimativa_produtividade_sacas") or 56.11)
+        ref_regional = float(dados_payload.get("referencia_regional_sacas_ha") or 76.00)
+
+        # 2. Define a regra de negócio: Margem de tolerância admissível (ex: 20%)
+        margem_tolerancia = 0.20
+        diferenca_absoluta = abs(prod_declarada - prod_estimada_ia)
+
+        # A produtividade estará CONFORME se a divergência entre o declarado e a IA
+        # for menor ou igual à tolerância estipulada sobre a estimativa.
+        if diferenca_absoluta <= (prod_estimada_ia * margem_tolerancia):
+            produtividade_conforme_dinamica = True
+        else:
+            # Caso o produtor declare algo absurdamente fora do predito pela IA, vira divergente
+            produtividade_conforme_dinamica = False
+
+        # Validação extra de segurança: Se o declarado for maior que a referência histórica da região, bloqueia
+        if prod_declarada > (ref_regional * 1.10):
+            produtividade_conforme_dinamica = False
+
         # Processa a string Base64 do mapa dinâmico
         mapa_base64_src = self._gerar_imagem_mapa_base64(wkt_real, status_atual)
+
+        eventos_raw = dados_payload.get("linha_tempo_safra") or []
+        eventos_tratados = []
+        for evento in eventos_raw:
+            eventos_tratados.append({
+                "fase": evento.get("fase", "Evento"),
+                "data_evento": dados_payload.get("dt_estimada_plantio") ,
+                "tipo": evento.get("tipo", "Estimado")
+            })
 
         # 3. Compilação da árvore aninhada de chaves mapeadas com fallback seguro
         payload_estruturado = {
@@ -252,36 +295,39 @@ class RelatorioService:
                 "safra": dados_payload.get("cabecalho", {}).get("safra") or dados_payload.get("safra", "N/A"),
                 "periodo_analisado": dados_payload.get("cabecalho", {}).get("periodo_analisado") or dados_payload.get("periodo_analisado", "N/A"),
                 "status_atestado": str(status_atual).upper(),
-                "data_emissao_atestado": formatar_data_br(dados_payload.get("cabecalho", {}).get("data_emissao_atestado") or dados_payload.get("data_emissao")),
+                "data_emissao_atestado": dados_payload.get("dt_emissao"),
                 "area_hectares": formatar_numero_br(dados_payload.get("cabecalho", {}).get("area_hectares") or dados_payload.get("area_hectares", 0.0))
             },
             "conformidade": {
-                "ambiental_conforme": bool(dados_payload.get("conformidade", {}).get("ambiental_conforme", True)),
-                "agricola_conforme": bool(dados_payload.get("conformidade", {}).get("agricola_conforme", True)),
-                "boas_praticas_conforme": bool(dados_payload.get("conformidade", {}).get("boas_praticas_conforme", False)),
-                "zarc_conforme": bool(dados_payload.get("conformidade", {}).get("zarc_conforme", True)),
-                "produtividade_conforme": bool(dados_payload.get("conformidade", {}).get("produtividade_conforme", True)),
-                "produtividade_estimada_sacas": formatar_numero_br(dados_payload.get("conformidade", {}).get("produtividade_estimada_sacas") or dados_payload.get("produtividade_estimada_sacas", 62.4)),
-                "produtividade_declarada_sacas": formatar_numero_br(dados_payload.get("conformidade", {}).get("produtividade_declarada_sacas") or dados_payload.get("produtividade_declarada_sacas", 60.0))
+                "ambiental_conforme":  "Aprovado" if dados_payload.get("conforme_ambiental", dados_payload.get("conformidade", {}).get("conforme_ambiental", False)) else "Reprovado",
+                "agricola_conforme": dados_payload.get("status_conducao"),
+
+                "boas_praticas_conforme": "Aprovado" if dados_payload.get("possui_certificado_bpa", dados_payload.get("conformidade", {}).get("possui_certificado_bpa", False)) else "Pendente",
+                "zarc_conforme": raw_data.get("validacao_zarc"),
+                "produtividade_conforme":  produtividade_conforme_dinamica,
+
+                "produtividade_estimada_sacas": formatar_numero_br(dados_payload.get("produtividade_estimada_sacas") or dados_payload.get("produtividade_ia_sacas_ha") or dados_payload.get("conformidade", {}).get("produtividade_estimada_sacas", 56.11)),
+                "produtividade_declarada_sacas": formatar_numero_br(dados_payload.get("produtividade_declarada_sacas") or dados_payload.get("volume_comercializar_declarado") or dados_payload.get("conformidade", {}).get("produtividade_declarada_sacas", 20.0))
             },
             "informacoes_generais": {
                 "municipio_uf": dados_payload.get("informacoes_generais", {}).get("municipio_uf") or dados_payload.get("municipio_uf", "Não Informado"),
                 "codigo_car": dados_payload.get("informacoes_generais", {}).get("codigo_car") or dados_payload.get("codigo_car", "Não Informado"),
-                "coordenadas_centroide": dados_payload.get("informacoes_generais", {}).get("coordenadas_centroide") or dados_payload.get("coordenadas_centroide", "Não Informado"),
-                "data_cadastro": formatar_data_br(dados_payload.get("informacoes_generais", {}).get("data_cadastro") or dados_payload.get("data_cadastro")),
+                "coordenadas_centroide": centroide,
+                "data_cadastro": dados_payload.get("data_cadastro"),
                 "mapa_base64": mapa_base64_src,
                 "logo_base64": logo_base64_src
             },
+            "linha_tempo_safra": eventos_tratados,
             "produtividade": {
                 "declarado_sacas_ha": formatar_numero_br(dados_payload.get("produtividade", {}).get("declarado_sacas_ha") or dados_payload.get("declarado_sacas_ha", 60.0)),
                 "estimado_ia_sacas_ha": formatar_numero_br(dados_payload.get("produtividade", {}).get("estimado_ia_sacas_ha") or dados_payload.get("estimado_ia_sacas_ha", 56.11)),
-                "referencia_regional_sacas_ha": formatar_numero_br(dados_payload.get("produtividade", {}).get("referencia_regional_sacas_ha") or dados_payload.get("referencia_regional_sacas_ha", 76.0))
+                "referencia_regional_sacas_ha": formatar_numero_br(dados_payload.get("referencia_regional_sacas_ha") or dados_payload.get("referencia_regional_sacas_ha", 76.0))
             },
             "metadados_atestado": {
                 "codigo_atestado": dados_payload.get("metadados_atestado", {}).get("codigo_atestado") or dados_payload.get("codigo_atestado") or f"ATD-2025-{dados_payload.get('id_atestado', 0):06d}",
                 "metodo_validacao": dados_payload.get("metadados_atestado", {}).get("metodo_validacao") or dados_payload.get("metodo_validacao", "VMG - Portaria SDI/MAPA nº 739/2025"),
                 "orgao_emissor": dados_payload.get("metadados_atestado", {}).get("orgao_emissor") or dados_payload.get("orgao_emissor", "Secretaria de Inovação, Desenvolvimento Sustentável, Irrigação e Cooperativismo"),
-                "validade_fim": formatar_data_br(dados_payload.get("metadados_atestado", {}).get("validade_fim") or dados_payload.get("validade_fim") or dados_payload.get("data_emissao")),
+                "validade_fim": dados_payload.get("dt_fim"),
                 "hash_documento_blockchain": dados_payload.get("metadados_atestado", {}).get("hash_documento_blockchain") or dados_payload.get("hash_documento_blockchain") or dados_payload.get("hash_relatorio", "NÃO ASSINADO")
             }
         }
@@ -306,12 +352,18 @@ class RelatorioService:
         }
 
         # Localizador de caminho absoluto para o binário nativo em ambiente Windows local
-        caminho_wkhtml_windows = r'C:\Program Files\wkhtmltopdf\bin\wkhtmltopdf.exe'
+        caminho_windows = r'C:\Program Files\wkhtmltopdf\bin\wkhtmltopdf.exe'
+        caminho_linux_debian = '/usr/bin/wkhtmltopdf'
+        caminho_linux_local = '/usr/local/bin/wkhtmltopdf'
 
-        if os.path.exists(caminho_wkhtml_windows):
-            configuracao_motor = pdfkit.configuration(wkhtmltopdf=caminho_wkhtml_windows)
+        if os.path.exists(caminho_windows):
+            configuracao_motor = pdfkit.configuration(wkhtmltopdf=caminho_windows)
+        elif os.path.exists(caminho_linux_debian):
+            configuracao_motor = pdfkit.configuration(wkhtmltopdf=caminho_linux_debian)
+        elif os.path.exists(caminho_linux_local):
+            configuracao_motor = pdfkit.configuration(wkhtmltopdf=caminho_linux_local)
         else:
-            # Fallback para ambiente Linux / Docker de produção
+            # Fallback padrão do sistema operacional caso esteja mapeado nas variáveis globais (PATH)
             configuracao_motor = pdfkit.configuration()
 
         try:
