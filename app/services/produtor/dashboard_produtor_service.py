@@ -77,7 +77,6 @@ class DashboardProdutorService:
         for crit in criterios_mapeados:
             status_linha = "Não Conforme" if crit["conflito"] else "Conforme"
 
-            # Converte para float garantindo precisão caso venha como Decimal do banco
             redutor_valor = float(crit["redutor"])
             pct_valor = float(crit["pct"])
 

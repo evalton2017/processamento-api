@@ -89,8 +89,7 @@ class DashboardProdutorRepository:
                                 dp.decendio_plantio_zarc,
                                 dp.risco_zarc_admissivel,
                                 hl.data_auditoria,
-
-                                EXISTS (
+                                NOT EXISTS (
                                     SELECT 1
                                     FROM agroprods.zarc_zoneamento AS zz
                                     WHERE zz.municipio_ibge::VARCHAR = g.codigo_municipio::VARCHAR
@@ -124,7 +123,7 @@ class DashboardProdutorRepository:
                                     ('Unidades de Conservação', db.conflito_socioambiental::BOOLEAN),
                                     ('Terras Indígenas', db.conflito_comunidades::BOOLEAN),
                                     ('Quilombolas', db.conflito_comunidades::BOOLEAN),
-                                    ('ZARC', CASE WHEN CAST(db.risco_zarc_admissivel AS NUMERIC) > 40.0 THEN true ELSE false END)
+                                    ('ZARC', informacao_zarc)
                                     ) AS c(nome, conflito)
                                      LEFT JOIN agroprods.parametros_conformidade p
                                                ON p.criterio_nome = c.nome

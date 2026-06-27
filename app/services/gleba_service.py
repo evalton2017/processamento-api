@@ -189,11 +189,11 @@ class GlebaService:
 
             # 1. Mapeamento Direto dos Status da Esteira
             status_passos = StatusPassosEsteira(
-                geometria=r.status_geometria if getattr(r, 'status_geometria', None) else "PENDENTE",
-                consulta_car=r.status_car if getattr(r, 'status_car', None) else "PENDENTE",
-                ambiental=r.status_ambiental if getattr(r, 'status_ambiental', None) else "PENDENTE",
-                cultura_ia=r.status_cultura_ia if getattr(r, 'status_cultura_ia', None) else "PENDENTE",
-                produtividade=r.status_produtividade if getattr(r, 'status_produtividade', None) else "PENDENTE",
+                geometria=r.esteira_geometria if getattr(r, 'esteira_geometria', None) else "PENDENTE",
+                consulta_car=r.esteira_car if getattr(r, 'esteira_car', None) else "PENDENTE",
+                ambiental=r.esteira_ambiental if getattr(r, 'esteira_ambiental', None) else "PENDENTE",
+                cultura_ia=r.esteira_cultura_ia if getattr(r, 'esteira_cultura_ia', None) else "PENDENTE",
+                produtividade=r.esteira_produtividade if getattr(r, 'esteira_produtividade', None) else "PENDENTE",
                 zarc=r.status_zarc if getattr(r, 'status_zarc', None) else "PENDENTE",
                 atestado=r.status_atestado if getattr(r, 'status_atestado', None) else "PENDENTE"
             )
@@ -237,8 +237,8 @@ class GlebaService:
             produtividade_media_ia = int(r.produtividade_ia_sacas_ha) if getattr(r, 'produtividade_ia_sacas_ha', None) is not None else 0
 
             resumo_analises = ResumoAnalisesCard(
-                ambiental_status="Conforme" if r.status_ambiental == "CONCLUIDO" else "Alerta",
-                ambiental_desc="Sem conflitos ambientais ativos no perímetro" if r.status_ambiental == "CONCLUIDO" else "Sobreposição territorial identificada",
+                ambiental_status="Conforme" if r.status_ambiental == "APROVADO" else "Alerta",
+                ambiental_desc="Sem conflitos ambientais ativos no perímetro" if r.status_ambiental_desc == "APROVADO" else "Sobreposição territorial identificada",
                 cultura_ia_status= r.status_conducao,
                 cultura_ia_desc=r.cultura_declarada,
                 produtividade_status=r.status_compatibilidade,

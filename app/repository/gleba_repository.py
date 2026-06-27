@@ -300,8 +300,8 @@ class GlebaRepository:
                         else_="Médio"
                     ).label("grupo_risco"),
                     case(
-                        (subquery_validacao_zarc == True, "30%"),
-                        else_="30%"
+                        (subquery_validacao_zarc == True, "40%"),
+                        else_="40%"
                     ).label("risco_admissivel"),
                     # Status Geral de Validação para a legenda
                     case(
@@ -310,22 +310,29 @@ class GlebaRepository:
                         (subquery_validacao_zarc == False, "Alerta"),
                         else_="Conforme"
                     ).label("status"),
-
                     # --- INDICAÇÃO DOS STATUS DA ESTEIRA HORIZONTAL ---
-                    case((GlebaModel.geometria != None, "CONCLUIDO"), else_="PENDENTE").label("status_geometria"),
-                    case((CarFeicoesAmbientais.id_car_feicao != None, "CONCLUIDO"), else_="PENDENTE").label("status_car"),
-                    case((HistoricoLaudosAmbientaisLedger.id_laudo != None, "CONCLUIDO"), else_="PENDENTE").label("status_ambiental"),
-                    case((IaClassificacaoCulturaLedger.id_classificacao != None, "CONCLUIDO"), else_="PENDENTE").label("status_cultura_ia"),
-                    case((IaEstimativaProdutividadeLedger.id_estimativa != None, "CONCLUIDO"), else_="PENDENTE").label("status_produtividade"),
+                    case((GlebaModel.geometria != None, "CONCLUIDO"), else_="PENDENTE").label("esteira_geometria"),
+                    case((CarFeicoesAmbientais.id_car_feicao != None, "CONCLUIDO"), else_="PENDENTE").label("esteira_car"),
+                    case((HistoricoLaudosAmbientaisLedger.conflito_socioambiental != None , "CONCLUIDO"), else_="PENDENTE").label("esteira_ambiental"),
+                    case((IaClassificacaoCulturaLedger.status_conducao != None, "CONCLUIDO"), else_="PENDENTE").label("esteira_cultura_ia"),
+                    case((IaEstimativaProdutividadeLedger.status_compatibilidade != None, "CONCLUIDO"), else_="PENDENTE").label("esteira_produtividade"),
                     case(
                         (DeclaracaoGlebaPeriodoLedger.id_declaracao == None, "PENDENTE"),
                         (subquery_validacao_zarc == True, "CONCLUIDO"),
                         else_="FORA_ZARC"
                     ).label("status_zarc"),
-                    case((AtestadosVmgLedger.id_atestado != None, "CONCLUIDO"), else_="PENDENTE").label("status_atestado")
+                    case((AtestadosVmgLedger.id_atestado != None, "CONCLUIDO"), else_="PENDENTE").label("status_atestado"),
+                    #----RESUMO ANALISES
+                    case((HistoricoLaudosAmbientaisLedger.conflito_socioambiental == True , "Reprovado"), else_="Aprovado").label("status_ambiental"),
+                    case((HistoricoLaudosAmbientaisLedger.conflito_socioambiental == True , "Conflito Ambiental Identificada"), else_="Sem conflitos ambientais ativos no perímetro").label("status_ambiental_desc"),
+                    #cultura_ia_status= r.status_conducao,
+                    #cultura_ia_desc=r.cultura_declarada,
+                    #produtividade_status=r.status_compatibilidade,
+                    #produtividade_desc=f"{produtividade_media_ia} sc/ha Estimativa média",
+                    #atestado_status=r.status_validacao,
+                    #atestado_desc="Laudo VMG assinado digitalmente" if r.status_validacao == "CONCLUIDO" else "Aguardando homologação final"
                 )
                 .join(MunicipioIbge, MunicipioIbge.codigo_municipio == GlebaModel.codigo_municipio)
-
                 # OUTER JOINS SEGUROS DO LEDGER
                 .outerjoin(CarFeicoesAmbientais, CarFeicoesAmbientais.codigo_car == GlebaModel.codigo_car)
                 .outerjoin(sub_ambiental, sub_ambiental.c.id_gleba == GlebaModel.id_gleba)
