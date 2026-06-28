@@ -181,6 +181,7 @@ class SoloRepository:
             schema="agroprods"  # Garante o roteamento correto para dentro do seu schema
         )
 
+
         # 2. Monta a instrução de inserção em lote para o dialeto PostgreSQL
         query_upsert = insert(tabela_treino).values(
             gleba_id=int(gleba_id),
@@ -203,6 +204,31 @@ class SoloRepository:
             await self.session.execute(stmt_final)
         elif hasattr(self, "db_session"):
             await self.db_session.execute(stmt_final)
+
+    async def apaga_raster(self, id_gleba: int):
+        # Executa a query de deleção usando os parâmetros nomeados com segurança
+        await self.session.execute(
+            text(
+                """
+                DELETE FROM agroprods.metadados_raster
+                WHERE id_gleba = :id_gleba
+                """
+            ),
+            {"id_gleba": id_gleba}
+        )
+        # Confirma a transação no banco de dados para salvar a alteração
+        await self.session.commit()
+
+    async def proximo_gleba_id(self) -> int:
+        resultado = await self.session.execute(
+            text(
+                """
+                    SELECT COALESCE(MAX(tc.gleba_id), 0) FROM agroprods.treinamento_culturas tc;
+                """
+            )
+        )
+        maior_id = resultado.scalar()
+        return maior_id + 1
 # =========================================================
 # CLIMA
 # =========================================================

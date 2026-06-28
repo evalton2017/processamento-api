@@ -2,10 +2,12 @@ import asyncio
 import os
 import logging
 import random
+from typing import List
 
 import rasterio
 from rasterio.mask import mask
-from shapely.wkt import loads
+from shapely import make_valid
+from shapely.wkt import loads, dumps
 
 from rasterio.warp import transform_geom
 from shapely.geometry import mapping
@@ -163,126 +165,143 @@ def ajustar_serie_temporal_ndvi(dados_ndvi, tamanho_alvo=60):
 
 @router.post(
     "/trigger-captura",
-    response_model=TriggerCapturaRealResponse,
+    response_model=List[TriggerCapturaRealResponse],
     status_code=status.HTTP_201_CREATED
 )
 async def disparar_captura_historico_real(
-        payload: TriggerCapturaRealRequest,
+        payloads: List[TriggerCapturaRealRequest],
         db_session: AsyncSession = Depends(get_async_db)
 ):
     service = VMGIntelligenceService()
     solo_repo = SoloRepository(db_session)
     loop = asyncio.get_running_loop()
+    respostas_lote = []
 
     try:
-        await service.sincronizar_rasters_gleba(
-            solo_repo=solo_repo,
-            geometria_wkt=payload.geometria_wkt,
-            id_gleba=payload.id_gleba,
-            data_inicio=payload.data_inicio,
-            data_fim=payload.data_fim
-        )
-        rasters_salvos = await solo_repo.buscar_rasters(
-            id_gleba=payload.id_gleba,
-            data_inicio=payload.data_inicio,
-            data_fim=payload.data_fim
-        )
+        for payload in payloads:
+            try:
+                geom = loads(payload.geometria_wkt)
+                if not geom.is_valid:
+                    geom = make_valid(geom)
+                geometria_limpa_wkt = dumps(geom)
+            except Exception as geom_err:
+                logger.error(f"Erro ao parsear WKT: {str(geom_err)}")
+                continue
 
-        if not rasters_salvos:
-            raise HTTPException(
-                status_code=404,
-                detail="Nenhuma cena do Sentinel-2 com cobertura de nuvens aceitável foi encontrada para esta janela e geometria."
+            # 2. Executa a limpeza do raster anterior
+            await solo_repo.apaga_raster(payload.id_gleba)
+
+            # 3. Passa a VARIÁVEL LOCAL para os serviços seguintes
+            await service.sincronizar_rasters_gleba(
+                solo_repo=solo_repo,
+                geometria_wkt=geometria_limpa_wkt,  # Correção aqui
+                id_gleba=payload.id_gleba,
+                data_inicio=payload.data_inicio,
+                data_fim=payload.data_fim
             )
 
-        # 🟢 CORREÇÃO: Converte os objetos Row imutáveis do SQLAlchemy para dicionários antes de enviar ao rasterio
-        rasters_normalizados = []
-        for r in rasters_salvos:
-            if isinstance(r, dict):
-                rasters_normalizados.append(r)
-            elif hasattr(r, "_mapping"):
-                # Captura todas as colunas mapeadas da Row (id_raster, raster_url, data_captura, etc.)
-                rasters_normalizados.append(dict(r._mapping))
-            elif hasattr(r, "_asdict"):
-                rasters_normalizados.append(r._asdict())
-            else:
-                # Fallback seguro caso o repositório devolva o modelo direto
-                rasters_normalizados.append({
-                    "id_raster": getattr(r, "id_raster", None),
-                    "raster_url": getattr(r, "raster_url", getattr(r, "url", None)),
-                    "data_captura": getattr(r, "data_captura", getattr(r, "data", None))
-                })
-
-        # 3. Executa o COG Streaming de forma segura com os dicionários estruturados
-        ndvi_resultados = await loop.run_in_executor(
-            None,
-            calcular_ndvi_real,
-            rasters_normalizados,
-            payload.geometria_wkt
-        )
-
-        if not ndvi_resultados or len(ndvi_resultados) == 0:
-            return TriggerCapturaRealResponse(
-                status="COMPLETADO_SEM_DADOS",
-                gleba_id=int(payload.id_gleba),
-                imagens_processadas=0,
-                mensagem="O satélite varreu a área, mas todas as imagens estavam cobertas por nuvens ou fora de órbita."
+            rasters_salvos = await solo_repo.buscar_rasters(
+                id_gleba=payload.id_gleba,
+                data_inicio=payload.data_inicio,
+                data_fim=payload.data_fim
             )
 
-        # Ordenação cronológica estrita
-        ndvi_resultados.sort(key=lambda x: x["data"])
+            if not rasters_salvos:
+                respostas_lote.append(TriggerCapturaRealResponse(
+                    status="ERRO_SEM_CENAS",
+                    gleba_id=int(payload.id_gleba),
+                    imagens_processadas=0,
+                    mensagem="Nenhuma cena do Sentinel-2 com cobertura de nuvens aceitável foi encontrada."
+                ))
+                continue
 
-        payload_ndvi_json = [
-            {
-                "data": str(item["data"]),
-                "ndvi_mean": float(item["ndvi_mean"]),
-                "ndvi_std": float(item["ndvi_std"])
-            }
-            for item in ndvi_resultados
-        ]
+            # Conversão dos objetos Row do SQLAlchemy para dicionários
+            rasters_normalizados = []
+            for r in rasters_salvos:
+                if isinstance(r, dict):
+                    rasters_normalizados.append(r)
+                elif hasattr(r, "_mapping"):
+                    rasters_normalizados.append(dict(r._mapping))
+                elif hasattr(r, "_asdict"):
+                    rasters_normalizados.append(r._asdict())
+                else:
+                    rasters_normalizados.append({
+                        "id_raster": getattr(r, "id_raster", None),
+                        "raster_url": getattr(r, "raster_url", getattr(r, "url", None)),
+                        "data_captura": getattr(r, "data_captura", getattr(r, "data", None))
+                    })
 
-        try:
-            # Força o SQLAlchemy a reordenar a conexão se ela estiver inativa
-            await db_session.connection()
-
-            await solo_repo.salvar_dados_para_treinamento(
-                gleba_id=payload.id_gleba,
-                safra=payload.safra,
-                ndvi=payload_ndvi_json,
-                cultura_real=payload.cultura_real.upper().strip()
+            # Executa o COG Streaming de forma segura
+            ndvi_resultados = await loop.run_in_executor(
+                None,
+                calcular_ndvi_real,
+                rasters_normalizados,
+                geometria_limpa_wkt
             )
-            await db_session.commit()
 
-        except Exception as db_err:
-            logger.warning(f"Sessão expirada durante o streaming geográfico. Tentando persistência em nova conexão: {str(db_err)}")
-            await db_session.rollback()
+            if not ndvi_resultados or len(ndvi_resultados) == 0:
+                respostas_lote.append(TriggerCapturaRealResponse(
+                    status="COMPLETADO_SEM_DADOS",
+                    gleba_id=int(payload.id_gleba),
+                    imagens_processadas=0,
+                    mensagem="O satélite varreu a área, mas todas as imagens estavam cobertas por nuvens ou fora de órbita."
+                ))
+                continue
 
-            # Fallback dinâmico: abre um bloco de contexto limpo para salvar sem travar
-            async with AsyncSession(db_session.bind) as nova_sessao:
-                novo_repo = SoloRepository(nova_sessao)
-                await novo_repo.salvar_dados_para_treinamento(
-                    gleba_id=payload.id_gleba,
+            # Ordenação cronológica estrita
+            ndvi_resultados.sort(key=lambda x: x["data"])
+
+            payload_ndvi_json = [
+                {
+                    "data": str(item["data"]),
+                    "ndvi_mean": float(item["ndvi_mean"]),
+                    "ndvi_std": float(item["ndvi_std"])
+                }
+                for item in ndvi_resultados
+            ]
+
+            proximo_id = await solo_repo.proximo_gleba_id()
+
+            try:
+                await db_session.connection()
+                await solo_repo.salvar_dados_para_treinamento(
+                    gleba_id=proximo_id,
                     safra=payload.safra,
                     ndvi=payload_ndvi_json,
                     cultura_real=payload.cultura_real.upper().strip()
                 )
-                await nova_sessao.commit()
+                await db_session.commit()
 
-        return TriggerCapturaRealResponse(
-            status="SUCESSO_CAPTURA_VMG",
-            gleba_id=int(payload.id_gleba),
-            imagens_processadas=int(len(ndvi_resultados)),
-            mensagem=f"Assinatura fenológica de {payload.cultura_real} extraída e salva com sucesso!"
-        )
+            except Exception as db_err:
+                logger.warning(f"Sessão expirada durante o streaming. Tentando persistência em nova conexão: {str(db_err)}")
+                await db_session.rollback()
 
-    except HTTPException as http_err:
-        await db_session.rollback()
-        raise http_err
+                async with AsyncSession(db_session.bind) as nova_sessao:
+                    novo_repo = SoloRepository(nova_sessao)
+                    await novo_repo.salvar_dados_para_treinamento(
+                        gleba_id=payload.id_gleba,
+                        safra=payload.safra,
+                        ndvi=payload_ndvi_json,
+                        cultura_real=payload.cultura_real.upper().strip()
+                    )
+                    await nova_sessao.commit()
+
+            respostas_lote.append(TriggerCapturaRealResponse(
+                status="SUCESSO_CAPTURA_VMG",
+                gleba_id=int(payload.id_gleba),
+                imagens_processadas=int(len(ndvi_resultados)),
+                mensagem=f"Assinatura fenológica de {payload.cultura_real} extraída e salva com sucesso!"
+            ))
+
+        return respostas_lote
+
     except Exception as e:
         await db_session.rollback()
         raise HTTPException(
             status_code=500,
-            detail=f"Erro interno no processador geográfico do pipeline: {str(e)}"
+            detail=f"Erro crítico no pipeline do lote geográfico: {str(e)}"
         )
+
 
 @router.post(
     "/retreinar-classificador",
@@ -351,10 +370,20 @@ async def executar_retreino_ia_real(db_session: AsyncSession = Depends(get_async
             continue
 
     X = np.array(X_lista)
-    y = np.array(y_lista, dtype=np.int32)
+
+    # 1. Mantemos a lista de culturas em formato texto limpo extraídas do banco
+    y_texto = [cultura_str for _, cultura_str in registros if cultura_str]
+
+    # 2. Utiliza o LabelEncoder para mapear o texto para os inteiros [0, 1, 2...] exigidos pelo XGBoost
+    from sklearn.preprocessing import LabelEncoder
+    encoder = LabelEncoder()
+    y = encoder.fit_transform(y_texto) # Transforma ['SOJA', 'ALGODAO'] em [5, 0...] de forma estável
+
+    # 3. Cria de forma AUTOMÁTICA e DINÂMICA o mapa reverso baseado no aprendizado do encoder
+    # encoder.classes_ guarda a lista alfabética exata mapeada para os índices 0, 1, 2...
+    mapa_para_producao = {int(i): str(classe) for i, classe in enumerate(encoder.classes_)}
 
     # Configuração do XGBoost adaptada para o volume dinâmico atual
-    # Se houver apenas uma classe coletada no Cold Start, limitamos o eval_metric para evitar quebras
     metric = "binary:logistic" if len(culturas_unicas) <= 2 else "multi:softprob"
 
     modelo = XGBClassifier(
@@ -366,17 +395,14 @@ async def executar_retreino_ia_real(db_session: AsyncSession = Depends(get_async
     )
 
     try:
-        # Executa o Fit na CPU da VPS
         modelo.fit(X, y)
-
         # Determina o path definitivo de salvamento por cima do pkl antigo
         base_dir = os.path.dirname(os.path.abspath(__file__))
-        # Sobe os níveis necessários para atingir a pasta física /modelos/
         caminho_pkl = os.path.abspath(os.path.join(base_dir, "..", "services", "pipelineia", "modelos", "classificador_culturas.pkl"))
-
         # Garante a criação da pasta caso ela mude de lugar
         os.makedirs(os.path.dirname(caminho_pkl), exist_ok=True)
 
+        # Salvamos o artefato com o mapa_reverso contendo o mapeamento dinâmico real do Encoder
         artefato_final = {
             "modelo": modelo,
             "mapa_reverso_classes": mapa_para_producao
@@ -387,7 +413,7 @@ async def executar_retreino_ia_real(db_session: AsyncSession = Depends(get_async
         return RetreinoClassificadorResponse(
             status="XGBOOST_RECALIBRADO",
             total_registros_treino=int(X.shape[0]),
-            classes_aprendidas=culturas_unicas,
+            classes_aprendidas=list(encoder.classes_), # Retorna a lista real aprendida
             caminho_modelo=caminho_pkl,
             mensagem="Pesos da rede atualizados com sucesso a partir dos dados do DBeaver."
         )

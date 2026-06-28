@@ -28,22 +28,18 @@ class VMGIntelligenceService:
 
     def __init__(self):
         base_dir = os.path.dirname(os.path.abspath(__file__))
-        # Carrega o artefato completo (Dicionário estruturado pelo gerar_modelos.py)
         artefato_classificacao = joblib.load(
             os.path.join(base_dir, "modelos", "classificador_culturas.pkl")
         )
-        # --- ATENÇÃO AQUI: Extrai os objetos de dentro do dicionário ---
         if isinstance(artefato_classificacao, dict):
             self.modelo_classificacao = artefato_classificacao["modelo"]
             self.mapa_reverso_classes = artefato_classificacao.get("mapa_reverso_classes", {})
         else:
-            # Fallback caso o pkl seja antigo e guarde o modelo direto
             self.modelo_classificacao = artefato_classificacao
             self.mapa_reverso_classes = {}
         self.modelo_produtividade = joblib.load(
             os.path.join(base_dir, "modelos", "produtividade.pkl")
         )
-
 
     @staticmethod
     def validar_epsg(srid: int) -> bool:
@@ -57,66 +53,91 @@ class VMGIntelligenceService:
     def _ajustar_escala_temporal_ndvi(self, dados_ndvi: np.ndarray, tamanho_alvo: int = 60) -> np.ndarray:
         """
         Substitui o np.resize por interpolação linear para manter a integridade da curva fenológica.
-        Garante o alinhamento estrito de features sem injetar ruído de repetição.
         """
         tamanho_atual = len(dados_ndvi)
         if tamanho_atual == tamanho_alvo:
             return dados_ndvi
 
-        # Cria eixos de tempo normalizados de 0 a 1 para o mapeamento
         x_atual = np.linspace(0, 1, tamanho_atual)
         x_alvo = np.linspace(0, 1, tamanho_alvo)
 
-        # Reconstrói a curva fenológica linearmente
         interpolador = interp1d(x_atual, dados_ndvi, kind='linear', fill_value="extrapolate")
         return interpolador(x_alvo).astype(np.float32)
 
     def classificar_cultura(self, perfil_ndvi: Any) -> Dict[str, Any]:
         if isinstance(perfil_ndvi, list):
-            valores_media = [item["ndvi_mean"] for item in perfil_ndvi]
+            valores_media = []
+            for item in perfil_ndvi:
+                if not isinstance(item, dict):
+                    continue
+
+                # Captura a chave correta que vimos na foto do banco
+                valor = item.get("ndvi_mean")
+                if valor is None:
+                    valor = item.get("ndvi1_mean")
+
+                if valor is not None:
+                    try:
+                        # FORÇA a conversão de objetos Decimal/Str para float nativo do Python
+                        valores_media.append(float(valor))
+                    except (ValueError, TypeError):
+                        valores_media.append(0.0)
+                else:
+                    valores_media.append(0.0)
+
             perfil_ndvi = np.array(valores_media, dtype=np.float32)
 
-        # --- CORREÇÃO: Bloqueia arrays vazios ou compostos apenas por zeros ---
-        if perfil_ndvi.size == 0 or np.all(perfil_ndvi == 0.0):
-            logger.error(f"[MÓDULO IA] Falha crítica: Perfil NDVI recebido está completamente zerado ou vazio devido à janela operacional curta.")
+        # Validação estrita
+        if (perfil_ndvi.size == 0 or
+                np.isnan(perfil_ndvi).any() or
+                np.all(perfil_ndvi == 0.0) or
+                np.std(perfil_ndvi) < 1e-4):
+
+            logger.error(f"[MÓDULO IA] Falha crítica: Perfil NDVI sem variabilidade temporal ou inválido.")
             return {
                 "cultura": "DESCONHECIDO",
                 "confianca": 0.0,
                 "status": "SEM_DADOS"
             }
 
-        ndvi_plano = perfil_ndvi.flatten()
+        # Garante que o array seja estritamente unidimensional antes de ajustar
+        ndvi_plano = perfil_ndvi.ravel()
         if len(ndvi_plano) != 60:
             ndvi_plano = self._ajustar_escala_temporal_ndvi(ndvi_plano, 60)
 
-        X = ndvi_plano.reshape(1, -1)
+        # Cria a matriz correta (1 amostra, 60 features) com tipo float32 puro
+        X = np.asarray(ndvi_plano, dtype=np.float32).reshape(1, -1)
 
-        # --- INFERÊNCIA DA INTELIGÊNCIA ARTIFICIAL ---
         probs_matriz = self.modelo_classificacao.predict_proba(X)
-        probs = probs_matriz[0]
+        probs = np.atleast_1d(probs_matriz[0])
 
         idx_interno_xgb = int(np.argmax(probs))
         confianca = float(probs[idx_interno_xgb])
 
         if hasattr(self, "mapa_reverso_classes") and self.mapa_reverso_classes:
-            retorno_pkl = self.mapa_reverso_classes.get(idx_interno_xgb, "DESCONHECIDO")
+            retorno_pkl = self.mapa_reverso_classes.get(idx_interno_xgb)
+        else:
+            retorno_pkl = None
 
-            # Se o pkl guardou IDs numéricos brutos ou texto em formato de dígito, traduz
+        if hasattr(self.modelo_classificacao, "classes_") and not retorno_pkl:
+            try:
+                retorno_pkl = self.modelo_classificacao.classes_[idx_interno_xgb]
+            except IndexError:
+                retorno_pkl = None
+
+        if retorno_pkl is not None:
             if isinstance(retorno_pkl, (int, np.integer)) or str(retorno_pkl).isdigit():
-                culturas_globais = {0: "CAFE", 1: "MILHO", 2: "SOJA"}
-                cultura_identificada = culturas_globais.get(int(retorno_pkl), "DESCONHECIDO")
+                classes_recalibradas = {
+                    0: "ALGODAO", 1: "ARROZ", 2: "CAFE",
+                    3: "CANA", 4: "MILHO", 5: "SOJA"
+                }
+                cultura_identificada = classes_recalibradas.get(int(retorno_pkl), "DESCONHECIDO")
             else:
-                # Se já for o texto direto ("SOJA", "CAFE"), atribui sem desvios
                 cultura_identificada = str(retorno_pkl)
         else:
-            # Fallback estático APENAS se o .pkl não possuir metadados (fora do if de cima)
-            culturas_globais_fallback = {
-                0: "SOJA", 1: "MILHO", 2: "ALGODAO",
-                3: "PASTAGEM", 4: "CAFE", 5: "ARROZ"
-            }
-            cultura_identificada = culturas_globais_fallback.get(idx_interno_xgb, "DESCONHECIDO")
+            # Fallback genérico de segurança
+            cultura_identificada = "DESCONHECIDO"
 
-        # Padronização universal aplicada para qualquer um dos caminhos acima
         cultura_identificada = cultura_identificada.upper().strip()
 
         # --- CRITÉRIO DE CONFORMIDADE DA PORTARIA SDI/MAPA Nº 739/2025 ---
@@ -129,26 +150,21 @@ class VMGIntelligenceService:
         }
 
     def calcular_produtividade(self, perfil_ndvi: Any, nitrogenio: float, temperatura: float, chuva: float) -> float:
-        # 🟢 CORREÇÃO 1: Extração e normalização segura de chaves para o cálculo de produtividade
         if isinstance(perfil_ndvi, list):
             valores_media = []
             for item in perfil_ndvi:
                 if not isinstance(item, dict):
                     continue
                 # Suporta tanto ndvi1_mean quanto ndvi_mean
-                valor = item.get("ndvi1_mean") if item.get("ndvi1_mean") is not None else item.get("ndvi_mean", 0.0)
+                valor = item.get("ndvi_mean") if item.get("ndvi_mean") is not None else item.get("ndvi_mean", 0.0)
                 valores_media.append(float(valor or 0.0))
             perfil_ndvi = np.array(valores_media, dtype=np.float32)
 
-        # 🟢 CORREÇÃO 2: Cláusula de barreira anti-crash para vetores vazios ou zerados
         if perfil_ndvi is None or perfil_ndvi.size == 0 or np.all(perfil_ndvi == 0.0):
             logger.warning("[PRODUTIVIDADE] Abortando cálculo matemático: série temporal de NDVI vazia ou inválida.")
             return 0.0
-
-        # Aplica o flatten de segurança
         ndvi_plano = perfil_ndvi.flatten()
 
-        # Garante o alinhamento de 60 posições (linha 145 original)
         if len(ndvi_plano) != 60:
             ndvi_plano = self._ajustar_escala_temporal_ndvi(ndvi_plano, 60)
 
@@ -246,15 +262,12 @@ class VMGIntelligenceService:
 
         for item in search.item_collection():
             try:
-                # --- CORREÇÃO EXTRAÇÃO DE BANDAS CIENTÍFICAS ---
-                # O NDVI necessita obrigatoriamente da banda NIR (B08) e RED (B04)
                 if "nir" not in item.assets or "red" not in item.assets:
                     continue
 
                 nir_url = item.assets["nir"].href
                 red_url = item.assets["red"].href
 
-                # O hash pode continuar sendo gerado a partir do link da banda red
                 hash_sha256 = hashlib.sha256(red_url.encode("utf-8")).hexdigest()
                 data_captura = item.datetime.date() if item.datetime else data_inicio.date()
 
@@ -281,11 +294,6 @@ class VMGIntelligenceService:
         Aplica a estratégia de UPSERT baseada na restrição única de gleba_id + safra.
         Conforme diretrizes de integridade da Portaria SDI/MAPA Nº 739/2025.
         """
-        # 1. Monta a instrução de inserção para o dialeto PostgreSQL
-        # Caso não utilize uma classe ORM declarativa, você pode mapear usando a tabela direto:
-        # stmt = insert(TreinamentoCulturasModel).values(...)
-
-        # Abaixo mapeamos utilizando a tabela via core ou string mapeada de forma assíncrona segura
         query_upsert = insert(text("agroprods.treinamento_culturas")).values(
             gleba_id=gleba_id,
             safra=safra,
@@ -294,9 +302,6 @@ class VMGIntelligenceService:
             savi=None,       # Deixado como opcional caso decida implementar no futuro
             cultura_real=cultura_real.upper()
         )
-
-        # 2. Define a ação caso ocorra o conflito de unicidade (Gleba já cadastrada nessa safra)
-        # O index_elements representa as colunas do seu UNIQUE CONSTRAINT
         stmt_final = query_upsert.on_conflict_do_update(
             index_elements=["gleba_id", "safra"],
             set_={
@@ -304,12 +309,10 @@ class VMGIntelligenceService:
                 "cultura_real": query_upsert.excluded.cultura_real
             }
         )
-
-        # 3. Executa a operação utilizando a sessão ativa do repositório (self.session ou self.db_session)
-        # Ajuste o nome do atributo de sessão de acordo com o padrão do seu repositório
         if hasattr(self, "session"):
             await self.session.execute(stmt_final)
         elif hasattr(self, "db_session"):
             await self.db_session.execute(stmt_final)
         else:
             raise AttributeError("Nenhuma sessão ativa encontrada no SoloRepository para executar o UPSERT.")
+
