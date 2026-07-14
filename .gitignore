@@ -8,6 +8,7 @@ __pycache__/
 venv/
 ENV/
 env/
+.env/
 ENV/local/
 
 # Arquivos de Configuração de IDEs (VS Code e PyCharm)
