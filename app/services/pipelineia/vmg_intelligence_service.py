@@ -2,13 +2,8 @@ import hashlib
 import json
 import logging
 import os
+import asyncio
 from datetime import datetime
-
-from sqlalchemy import insert, text
-
-print(os.environ.get("PROJ_LIB"))
-print(os.environ.get("GDAL_DATA"))
-
 from typing import Dict, Any, List
 
 import joblib
@@ -17,12 +12,12 @@ from pystac_client import Client
 from shapely.geometry import mapping
 from shapely.wkt import loads
 from scipy.interpolate import interp1d, RBFInterpolator
-
+from sqlalchemy.dialects.postgresql import insert
 
 logger = logging.getLogger(__name__)
 EPSG_PADRAO = 4326
-
 CONFIANCA_MINIMA_VMG = 0.80
+
 
 class VMGIntelligenceService:
 
@@ -51,9 +46,6 @@ class VMGIntelligenceService:
         return hashlib.sha256(f"{hash_anterior}{conteudo}".encode()).hexdigest()
 
     def _ajustar_escala_temporal_ndvi(self, dados_ndvi: np.ndarray, tamanho_alvo: int = 60) -> np.ndarray:
-        """
-        Substitui o np.resize por interpolação linear para manter a integridade da curva fenológica.
-        """
         tamanho_atual = len(dados_ndvi)
         if tamanho_atual == tamanho_alvo:
             return dados_ndvi
@@ -71,14 +63,10 @@ class VMGIntelligenceService:
                 if not isinstance(item, dict):
                     continue
 
-                # Captura a chave correta que vimos na foto do banco
-                valor = item.get("ndvi_mean")
-                if valor is None:
-                    valor = item.get("ndvi1_mean")
+                valor = item.get("ndvi_mean") or item.get("ndvi1_mean")
 
                 if valor is not None:
                     try:
-                        # FORÇA a conversão de objetos Decimal/Str para float nativo do Python
                         valores_media.append(float(valor))
                     except (ValueError, TypeError):
                         valores_media.append(0.0)
@@ -87,12 +75,10 @@ class VMGIntelligenceService:
 
             perfil_ndvi = np.array(valores_media, dtype=np.float32)
 
-        # Validação estrita
         if (perfil_ndvi.size == 0 or
                 np.isnan(perfil_ndvi).any() or
                 np.all(perfil_ndvi == 0.0) or
                 np.std(perfil_ndvi) < 1e-4):
-
             logger.error(f"[MÓDULO IA] Falha crítica: Perfil NDVI sem variabilidade temporal ou inválido.")
             return {
                 "cultura": "DESCONHECIDO",
@@ -100,12 +86,10 @@ class VMGIntelligenceService:
                 "status": "SEM_DADOS"
             }
 
-        # Garante que o array seja estritamente unidimensional antes de ajustar
         ndvi_plano = perfil_ndvi.ravel()
         if len(ndvi_plano) != 60:
             ndvi_plano = self._ajustar_escala_temporal_ndvi(ndvi_plano, 60)
 
-        # Cria a matriz correta (1 amostra, 60 features) com tipo float32 puro
         X = np.asarray(ndvi_plano, dtype=np.float32).reshape(1, -1)
 
         probs_matriz = self.modelo_classificacao.predict_proba(X)
@@ -114,10 +98,9 @@ class VMGIntelligenceService:
         idx_interno_xgb = int(np.argmax(probs))
         confianca = float(probs[idx_interno_xgb])
 
+        retorno_pkl = None
         if hasattr(self, "mapa_reverso_classes") and self.mapa_reverso_classes:
             retorno_pkl = self.mapa_reverso_classes.get(idx_interno_xgb)
-        else:
-            retorno_pkl = None
 
         if hasattr(self.modelo_classificacao, "classes_") and not retorno_pkl:
             try:
@@ -135,12 +118,9 @@ class VMGIntelligenceService:
             else:
                 cultura_identificada = str(retorno_pkl)
         else:
-            # Fallback genérico de segurança
             cultura_identificada = "DESCONHECIDO"
 
         cultura_identificada = cultura_identificada.upper().strip()
-
-        # --- CRITÉRIO DE CONFORMIDADE DA PORTARIA SDI/MAPA Nº 739/2025 ---
         status = "HOMOLOGADO" if confianca >= CONFIANCA_MINIMA_VMG else "REVISAO_MANUAL"
 
         return {
@@ -155,7 +135,6 @@ class VMGIntelligenceService:
             for item in perfil_ndvi:
                 if not isinstance(item, dict):
                     continue
-                # Suporta tanto ndvi1_mean quanto ndvi_mean
                 valor = item.get("ndvi_mean") if item.get("ndvi_mean") is not None else item.get("ndvi_mean", 0.0)
                 valores_media.append(float(valor or 0.0))
             perfil_ndvi = np.array(valores_media, dtype=np.float32)
@@ -177,13 +156,11 @@ class VMGIntelligenceService:
         return float(max(0.0, predicao))
 
     @staticmethod
-    def interpolar_rbf(
-            coordenada_gleba,
-            estacoes: List[Dict[str, Any]]
-    ) -> Dict[str, float]:
+    def interpolar_rbf(coordenada_gleba, estacoes: List[Dict[str, Any]]) -> Dict[str, float]:
         if not estacoes or len(estacoes) < 3:
             logger.error(f"Inconformidade Portaria VMG: Mínimo de 3 estações operantes exigido.")
-            raise ValueError("Erro de Infraestrutura: Triangulação climática exige pelo menos 3 estações meteorológicas operantes.")
+            raise ValueError(
+                "Erro de Infraestrutura: Triangulação climática exige pelo menos 3 estações meteorológicas operantes.")
 
         coords = np.array([[float(e["longitude"]), float(e["latitude"])] for e in estacoes], dtype=float)
         temperaturas = np.array([float(e["temp_c"]) for e in estacoes], dtype=float)
@@ -233,6 +210,7 @@ class VMGIntelligenceService:
     async def sincronizar_rasters_gleba(
             self, solo_repo, geometria_wkt: str, id_gleba: int, data_inicio, data_fim
     ):
+        """Sincroniza os metadados salvando os links corretos de red e nir no banco de dados."""
         async for imagem in self.buscar_imagens_sentinel_stream(
                 geometria_wkt=geometria_wkt, data_inicio=data_inicio, data_fim=data_fim
         ):
@@ -248,23 +226,47 @@ class VMGIntelligenceService:
     async def buscar_imagens_sentinel_stream(
             self, geometria_wkt: str, data_inicio: datetime, data_fim: datetime, max_nuvem: float = 30.0
     ):
+        """
+        Busca imagens do Sentinel-2 rodando a API síncrona do pystac no executor thread-pool
+        para evitar travamentos eternos de I/O de rede no Worker Taskiq.
+        """
+        loop = asyncio.get_running_loop()
         geometria = loads(geometria_wkt)
-        catalog = Client.open("https://earth-search.aws.element84.com/v1")
 
         intervalo_tempo = f"{data_inicio.strftime('%Y-%m-%d')}/{data_fim.strftime('%Y-%m-%d')}"
 
-        search = catalog.search(
-            collections=["sentinel-2-l2a"],
-            intersects=mapping(geometria),
-            datetime=intervalo_tempo,
-            query={"eo:cloud_cover": {"lte": max_nuvem}},
-        )
+        def executar_busca_stac():
+            # Abre o cliente com timeout interno
+            catalog = Client.open("https://earth-search.aws.element84.com/v1")
+            search = catalog.search(
+                collections=["sentinel-2-l2a"],
+                intersects=mapping(geometria),
+                datetime=intervalo_tempo,
+                query={"eo:cloud_cover": {"lte": max_nuvem}},
+                max_items=100  # Evita trazer milhares de itens por acidente e estourar a memória/timeout
+            )
+            # Retorna uma lista de itens processados síncronos
+            return list(search.items())
 
-        for item in search.item_collection():
+        try:
+            # Roda a busca síncrona pesada sem travar o Event Loop do Asyncio
+            itens = await asyncio.wait_for(
+                loop.run_in_executor(None, executar_busca_stac),
+                timeout=45.0  # Timeout de segurança de 45 segundos para a API STAC
+            )
+        except asyncio.TimeoutError:
+            logger.error("Timeout de 45s ao acessar a API STAC Element84. Pulando busca remota.")
+            itens = []
+        except Exception as e:
+            logger.error(f"Erro ao conectar ou buscar imagens na API do STAC: {str(e)}")
+            itens = []
+
+        for item in itens:
             try:
                 if "nir" not in item.assets or "red" not in item.assets:
                     continue
 
+                # Evita links expirados preferindo o href do gsd
                 nir_url = item.assets["nir"].href
                 red_url = item.assets["red"].href
 
@@ -273,8 +275,8 @@ class VMGIntelligenceService:
 
                 yield {
                     "data": data_captura,
-                    "nir_url": nir_url,      # Nova chave necessária para o cálculo real
-                    "raster_url": f"{item.assets['red'].href}|{item.assets['nir'].href}",
+                    "nir_url": nir_url,
+                    "raster_url": f"{red_url}|{nir_url}",
                     "hash_sha256": hash_sha256,
                     "cloud_cover": float(item.properties.get("eo:cloud_cover", 0.0)),
                 }
@@ -284,24 +286,38 @@ class VMGIntelligenceService:
 
     async def salvar_dados_para_treinamento(
             self,
+            db_session,  # Recomenda-se passar a sessão ativa explicitamente
             gleba_id: int,
             safra: str,
             ndvi: list,
             cultura_real: str
     ) -> None:
         """
-        Salva os vetores de índices de vegetação estruturados para a base de retreino da IA.
-        Aplica a estratégia de UPSERT baseada na restrição única de gleba_id + safra.
-        Conforme diretrizes de integridade da Portaria SDI/MAPA Nº 739/2025.
+        Salva os vetores estruturados para retreino.
+        Usa o construtor Postgres nativo de UPSERT para evitar quebras do driver Asyncpg.
         """
-        query_upsert = insert(text("agroprods.treinamento_culturas")).values(
+        from sqlalchemy import Table, MetaData, Column, Integer, String
+        from sqlalchemy.dialects.postgresql import JSONB
+
+        # Define a tabela dinamicamente ou use sua definição declarativa se disponível
+        metadata = MetaData()
+        tabela_treinamento = Table(
+            "treinamento_culturas",
+            metadata,
+            Column("gleba_id", Integer, primary_key=True),
+            Column("safra", String, primary_key=True),
+            Column("ndvi", JSONB),
+            Column("cultura_real", String),
+            schema="agroprods"
+        )
+
+        query_upsert = insert(tabela_treinamento).values(
             gleba_id=gleba_id,
             safra=safra,
-            ndvi=ndvi,       # O driver do Asyncpg/Postgres converte a lista Python direto para o JSONB
-            evi=None,        # Deixado como opcional caso decida implementar no futuro
-            savi=None,       # Deixado como opcional caso decida implementar no futuro
+            ndvi=ndvi,
             cultura_real=cultura_real.upper()
         )
+
         stmt_final = query_upsert.on_conflict_do_update(
             index_elements=["gleba_id", "safra"],
             set_={
@@ -309,10 +325,5 @@ class VMGIntelligenceService:
                 "cultura_real": query_upsert.excluded.cultura_real
             }
         )
-        if hasattr(self, "session"):
-            await self.session.execute(stmt_final)
-        elif hasattr(self, "db_session"):
-            await self.db_session.execute(stmt_final)
-        else:
-            raise AttributeError("Nenhuma sessão ativa encontrada no SoloRepository para executar o UPSERT.")
 
+        await db_session.execute(stmt_final)

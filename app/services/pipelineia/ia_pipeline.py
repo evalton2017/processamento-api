@@ -1,17 +1,12 @@
 import asyncio
 from datetime import datetime
-
 import numpy as np
 import pandas as pd
 from typing import Dict, Any
 
 import rasterio
-from rasterio.io import MemoryFile
 from rasterio.mask import mask
-# Este lê strings WKT como 'POLYGON ((...))'
 from shapely.wkt import loads
-
-# Este importa apenas o que realmente existe em geometry
 from shapely.geometry import mapping
 
 from app.services.pipelineia.vmg_intelligence_service import VMGIntelligenceService
@@ -25,138 +20,83 @@ from app.events.vmg_events import vmg_event_dispatcher, EventoAnaliseConcluida
 
 import logging
 
-#logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
-# ==============================================================================
-# FUNÇÕES PURAS ISOLADAS (Protegidas contra corrupção de cache do Taskiq)
-# ==============================================================================
-def processar_raster(
-        dataset,
-        geometria,
-        banda_red=None,
-        banda_nir=None,
-):
-    try:
-        if banda_red is None or banda_nir is None:
-            if dataset.count >= 8:
-                banda_red = 4
-                banda_nir = 8
-            elif dataset.count >= 2:
-                banda_red = 1
-                banda_nir = 2
-            else:
-                raise ValueError(
-                    f"Raster incompatível ({dataset.count} bandas)"
-                )
 
-            logger.info("CRS: %s", dataset.crs)
-            logger.info("Transform: %s", dataset.transform)
-            logger.info("Bounds: %s", dataset.bounds)
-            logger.info("Profile: %s", dataset.profile)
-        bandas, _ = mask(
-            dataset,
-            [mapping(geometria)],
-            crop=True,
-            indexes=[banda_red, banda_nir],
-            filled=False,
-        )
-        red = bandas[0].astype(np.float32)
-        nir = bandas[1].astype(np.float32)
-        if dataset.nodata is not None:
-            red = np.where(
-                red == dataset.nodata,
-                np.nan,
-                red,
-                )
-            nir = np.where(
-                nir == dataset.nodata,
-                np.nan,
-                nir,
-                )
-        soma = nir + red
-        ndvi = np.divide(
-            nir - red,
-            soma,
-            out=np.full(
-                red.shape,
-                np.nan,
-                dtype=np.float32,
-            ),
-            where=soma != 0,
-            )
-        ndvi = np.clip(
-            ndvi,
-            -1,
-            1,
-        )
-        return float(np.nanmean(ndvi))
-    except Exception:
-        logger.exception(
-            "Erro no processamento raster"
-        )
-        return np.nan
+# ==============================================================================
+# FUNÇÕES PURAS ISOLADAS (Otimizadas para Processamento em Bloco e Rede)
+# ==============================================================================
 
 def calcular_ndvi_real(rasters, geometria_wkt: str):
-    import rasterio
-    import numpy as np
-    from rasterio.mask import mask
+    """
+    Calcula o NDVI em lote via streaming de imagens de satélite (Cloud Optimized GeoTIFFs).
+    Aprimorado com tratamento fino de erros do GDAL e timeout.
+    """
     from shapely.ops import transform as shapely_transform
     from pyproj import Transformer
     from shapely.geometry import mapping
+    import numpy as np
+    import rasterio
+    from rasterio.mask import mask
 
     geometria = loads(geometria_wkt)
     resultados = []
 
-    # Configuração de performance para streaming do GDAL/Rasterio
-    gdal_env = rasterio.Env(
-        GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR",
-        CPL_VSIL_CURL_ALLOWED_EXTENSIONS=".tif"
-    )
+    # Configurações de performance de rede refinadas para evitar timeouts e travamentos de requisição
+    gdal_config = {
+        "GDAL_DISABLE_READDIR_ON_OPEN": "EMPTY_DIR",
+        "CPL_VSIL_CURL_ALLOWED_EXTENSIONS": ".tif",
+        "GDAL_HTTP_TIMEOUT": "15",  # Limite de 15s por requisição
+        "GDAL_HTTP_MAX_RETRY": "3",  # Tenta novamente em caso de flutuação de rede
+        "GDAL_HTTP_RETRY_DELAY": "2",  # Intervalo de re-tentativa
+        "VSI_CACHE": "TRUE",  # Habilita cache de leitura em memória
+        "VSI_CACHE_SIZE": "50000000",  # 50MB de cache virtual
+        "CPL_DEBUG": "OFF"  # Mude para ON localmente se precisar depurar conexões HTTP profundas
+    }
 
-    with gdal_env:
+    # Ativa ambiente de execução seguro do GDAL
+    with rasterio.Env(**gdal_config):
         for r in rasters:
+            url_composta = r.get("raster_url")
+            id_raster = r.get("id_raster")
+
+            if not url_composta:
+                logger.warning(f"URL inválida ou nula para o raster {id_raster}.")
+                continue
+
+            # Extração segura das bandas científica de Red e NIR
+            if "|" in url_composta:
+                url_red, url_nir = url_composta.split("|")
+            else:
+                url_visual = url_composta
+                url_red = url_visual.replace("visual.tif", "B04.tif")
+                url_nir = url_visual.replace("visual.tif", "B08.tif")
+
             try:
-                url_composta = r["raster_url"]
-
-                # Se a URL contiver o separador, extrai os links científicos corretos
-                if "|" in url_composta:
-                    url_red, url_nir = url_composta.split("|")
-                else:
-                    # Fallback de segurança se o registro for antigo
-                    url_visual = url_composta
-                    url_red = url_visual.replace("visual.tif", "B04.tif")
-                    url_nir = url_visual.replace("visual.tif", "B08.tif")
-
-                # Abre a banda Red para coletar a projeção (CRS)
+                # 1. Processamento e leitura da banda Vermelha (Red)
                 with rasterio.open(url_red) as src_red:
                     crs = src_red.crs
-
-                    # Projeta a gleba (WGS84) para o CRS do raster (UTM local da imagem)
                     transformer = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
                     geom_proj = shapely_transform(transformer.transform, geometria)
                     geoms = [mapping(geom_proj)]
 
-                    # Recorta via streaming apenas os pixels internos da gleba
                     red_mask, _ = mask(src_red, geoms, crop=True, filled=False, nodata=np.nan)
                     red_array = red_mask[0].astype(np.float32)
 
+                # 2. Processamento e leitura da banda Infravermelho Próximo (NIR)
                 with rasterio.open(url_nir) as src_nir:
                     nir_mask, _ = mask(src_nir, geoms, crop=True, filled=False, nodata=np.nan)
                     nir_array = nir_mask[0].astype(np.float32)
 
-                # Cálculo seguro do NDVI ignorando o nodata/nan
+                # 3. Cálculo do NDVI vetorizado com descarte seguro de divisão por zero e ruídos
                 denominador = nir_array + red_array
                 numerador = nir_array - red_array
 
-                # Evita divisão por zero
                 with np.errstate(divide='ignore', invalid='ignore'):
                     ndvi_matriz = np.where(denominador == 0, np.nan, numerador / denominador)
 
-                # Filtra valores fora do range válido do NDVI por ruído atmosférico
+                # Filtro físico do espectro de reflectância do NDVI válido
                 ndvi_matriz = np.where((ndvi_matriz >= -1.0) & (ndvi_matriz <= 1.0), ndvi_matriz, np.nan)
-
-                # Remove máscaras e gera estatísticas limpas
                 pixels_validos = ndvi_matriz[~np.isnan(ndvi_matriz)]
 
                 if pixels_validos.size > 0:
@@ -166,20 +106,25 @@ def calcular_ndvi_real(rasters, geometria_wkt: str):
                     mean_val, std_val = 0.0, 0.0
 
                 resultados.append({
-                    "id_raster": r["id_raster"],
+                    "id_raster": id_raster,
                     "data": r["data_captura"],
                     "ndvi_mean": mean_val,
                     "ndvi_std": std_val
                 })
 
-            except Exception as e:
-                # Se falhar uma imagem (ex: link expirado ou nuvem excessiva oculta as bandas), continua o loop
+            except Exception as ex:
+                # LOG EXPLÍCITO DO MOTIVO DO FRACASSO DO DOWNLOAD/LEITURA
+                logger.error(
+                    f"Falha ao realizar streaming ou processamento do raster {id_raster} via COG. "
+                    f"URLs testadas: [RED: {url_red}] | [NIR: {url_nir}]. Erro: {str(ex)}"
+                )
                 continue
 
     return resultados
 
+
 def processar_ia_modulo(service, ndvi, coordenada_gleba, estacoes, nitrogenio, possui_bpa, bloqueio_ambiental):
-    """Executa a inferência matemática isolada sem depender do estado do objeto."""
+    """Executa a inferência matemática isolada sem depender de contexto corrompível do Taskiq."""
     clima = service.interpolar_rbf(coordenada_gleba, estacoes)
     classificacao = service.classificar_cultura(ndvi)
 
@@ -201,13 +146,13 @@ def processar_ia_modulo(service, ndvi, coordenada_gleba, estacoes, nitrogenio, p
 
     return clima, cultura, confianca, produtividade
 
+
 # ==============================================================================
 # CLASSE PRINCIPAL DO PIPELINE
 # ==============================================================================
 class VMGPipeline:
 
-    def __init__(self,compliance_repo,zarc_repo,solo_repo,clima_repo,bpa_repo,ledger_repo, db_session
-    ):
+    def __init__(self, compliance_repo, zarc_repo, solo_repo, clima_repo, bpa_repo, ledger_repo, db_session):
         self.compliance_repo = compliance_repo
         self.zarc_repo = zarc_repo
         self.solo_repo = solo_repo
@@ -242,19 +187,16 @@ class VMGPipeline:
         )
         agora = datetime.now()
 
-        # 2. DEFINE A JANELA OPERACIONAL E CORRIGE A SAFRA DINAMICAMENTE
+        # 2. Define a janela operacional e corrige a safra dinamicamente
         if data_plantio > agora:
-            logger.warning(f"Plantio programado para o futuro ({data_plantio.date()}). Ajustando busca para o histórico fenológico (180 dias).")
-
-            # Se o plantio está no futuro, a IA vai avaliar o histórico real que aconteceu nos últimos 180 dias
+            logger.warning(
+                f"Plantio programado para o futuro ({data_plantio.date()}). Ajustando busca para o histórico fenológico (180 dias).")
             dt_inicio = (agora - pd.DateOffset(days=180)).to_pydatetime()
             dt_fim = agora
 
-            # CORREÇÃO DA SAFRA: Como estamos olhando o passado real (fim de 2025/início de 2026), a safra é a anterior
             base_historica = agora - pd.DateOffset(months=6)
-            safra = f"{base_historica.year}/{base_historica.year + 1}"  # Fica "2025/2026"
+            safra = f"{base_historica.year}/{base_historica.year + 1}"
         else:
-            # SE O PLANTIO JÁ OCORREU: Usa a janela normal do ciclo atual
             limite_inicio = (data_plantio - pd.DateOffset(days=30)).to_pydatetime()
             limite_fim = data_analise.to_pydatetime()
 
@@ -263,16 +205,16 @@ class VMGPipeline:
             if dt_inicio > dt_fim:
                 dt_inicio, dt_fim = dt_fim, dt_inicio
 
-            # Safra normal baseada no plantio real que já aconteceu
             base = data_plantio - pd.DateOffset(months=3)
             safra = f"{base.year}/{base.year + 1}"
 
-        # 3. Margem de segurança caso o intervalo fique estreito demais
         if (dt_fim - dt_inicio).days < 5:
             dt_inicio = (dt_fim - pd.DateOffset(days=180)).to_pydatetime()
 
-        logger.info(f"Buscando rasters VMG na janela operacional: {dt_inicio.date()} até {dt_fim.date()} para a Safra: {safra}")
+        logger.info(
+            f"Buscando rasters VMG na janela operacional: {dt_inicio.date()} até {dt_fim.date()} para a Safra: {safra}")
 
+        # Busca registros de metadados no Postgres
         rasters = await self.solo_repo.buscar_rasters(
             id_gleba=id_gleba,
             data_inicio=dt_inicio,
@@ -280,7 +222,7 @@ class VMGPipeline:
         )
 
         if not rasters:
-            # Passa objetos datetime nativos e limpos para evitar quebras no pystac_client
+            # Sincroniza via STAC client (gera os registros de metadados vazios no banco com as URLs corretas de download)
             await self.service.sincronizar_rasters_gleba(
                 solo_repo=self.solo_repo,
                 geometria_wkt=gleba["geometria"],
@@ -296,7 +238,7 @@ class VMGPipeline:
 
         if not rasters:
             raise ValueError(
-                "Nenhum raster encontrado para a gleba no período informado."
+                "Nenhum raster cadastrado ou sincronizado para a gleba no período informado."
             )
 
         geometria_texto = str(gleba["geometria"])
@@ -304,16 +246,14 @@ class VMGPipeline:
         centroide = poligono.centroid
         coordenada_gleba = [[float(centroide.x), float(centroide.y)]]
 
-        # 1. Determina o decêndio interno do mês corrente (Regra rígida MAPA)
+        # Determina os decêndios da portaria MAPA / ZARC
         if data_plantio.day <= 10:
             decendio_mes = 1
         elif data_plantio.day <= 20:
             decendio_mes = 2
         else:
-            # Engloba do dia 21 até o fim do mês (seja dia 28, 29, 30 ou 31)
             decendio_mes = 3
 
-        # 2. Calcula o decêndio absoluto do ano (Cada mês anterior completo soma 3 decêndios)
         decendio_plantio = ((data_plantio.month - 1) * 3) + decendio_mes
 
         laudo_ambiental = await self.compliance_repo.verificar_restricoes_portaria(id_gleba, raio_metros=500.0)
@@ -325,7 +265,9 @@ class VMGPipeline:
         hash_anterior = await self.ledger_repo.obter_ultimo_hash_gleba(id_gleba)
         bloqueio_ambiental = laudo_ambiental["conflito_socioambiental"]
 
-        # LÓGICA REESTRUTURADA: Cache Híbrido de NDVI via COG
+        # ----------------------------------------------------------------------
+        # LÓGICA DE CACHE E CÁLCULO DE NDVI ASSÍNCRONO / SEGURO
+        # ----------------------------------------------------------------------
         ndvi_resultados = []
         rasters_para_calcular = []
 
@@ -341,6 +283,9 @@ class VMGPipeline:
                 rasters_para_calcular.append(r)
 
         if rasters_para_calcular:
+            logger.info(f"Processando download/cálculo por streaming de {len(rasters_para_calcular)} rasters.")
+
+            # Libera o Event Loop enquanto o threadpool do rasterio faz as requisições HTTP demoradas
             novos_calculos = await loop.run_in_executor(
                 None,
                 calcular_ndvi_real,
@@ -348,29 +293,46 @@ class VMGPipeline:
                 geometria_texto,
             )
 
-            ndvi_resultados.extend(novos_calculos)
+            if not novos_calculos:
+                logger.error("Todos os cálculos de NDVI retornaram vazios ou falharam por erro de rede.")
+            else:
+                ndvi_resultados.extend(novos_calculos)
 
-            for calculo in novos_calculos:
-                await self.solo_repo.atualizar_estatisticas_ndvi(
-                    id_raster=calculo["id_raster"],
-                    ndvi_mean=calculo["ndvi_mean"],
-                    ndvi_std=calculo["ndvi_std"]
-                )
+                # Persistência atômica isolada para evitar transações longas travando a conexão do Postgres
+                try:
+                    for calculo in novos_calculos:
+                        await self.solo_repo.atualizar_estatisticas_ndvi(
+                            id_raster=calculo["id_raster"],
+                            ndvi_mean=calculo["ndvi_mean"],
+                            ndvi_std=calculo["ndvi_std"]
+                        )
+                    # Força a gravação dos dados no banco imediatamente liberando o pool
+                    await self.db_session.flush()
+                except Exception as db_ex:
+                    logger.exception(
+                        "Falha ao salvar cache de NDVI no banco de dados. Tentando realizar rollback seguro.")
+                    await self.db_session.rollback()
 
-        # Ordena a série temporal para a IA processar em ordem cronológica estrita
+        if not ndvi_resultados:
+            raise ValueError(
+                "Falha crítica: Não há dados válidos de NDVI calculados para esta gleba."
+            )
+
+        # Ordenação cronológica estrita da série temporal
         ndvi_resultados.sort(key=lambda x: x["data"])
-        # Execução do módulo de Inteligência Artificial usando a lista final de estatísticas
+
+        # Execução do modelo inteligente de predição
         clima, cultura, confianca, produtividade = await loop.run_in_executor(
             None,
             processar_ia_modulo,
             self.service, ndvi_resultados, coordenada_gleba, estacoes, nitrogenio, possui_bpa, bloqueio_ambiental
         )
+
         payload_ndvi_json = [
             {"data": str(item["data"]), "ndvi_mean": float(item["ndvi_mean"]), "ndvi_std": float(item["ndvi_std"])}
             for item in ndvi_resultados
         ]
 
-        # Se a IA bater com a declaração do produtor, temos um dado de treino perfeito (Ground Truth Confiável)
         if cultura.upper() == cultura_declarada.upper() and confianca >= 0.75:
             await self.solo_repo.salvar_dados_para_treinamento(
                 gleba_id=id_gleba,
@@ -379,7 +341,7 @@ class VMGPipeline:
                 cultura_real=cultura.upper()
             )
 
-        # Montagem do payload base do bloco imutável
+        # Montagem do payload seguro do ledger imutável
         payload = {
             "gleba_id": int(id_gleba),
             "safra": str(safra),
@@ -438,7 +400,6 @@ class VMGPipeline:
 
         self.db_session.add_all([laudo_ledger, classificacao_ledger, produtividade_ledger, declaracao_ledger])
 
-        # Disparo de ouvintes de eventos de negócio
         evento = EventoAnaliseConcluida(
             id_produtor=id_produtor,
             id_gleba=id_gleba,
